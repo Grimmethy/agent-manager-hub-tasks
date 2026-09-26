@@ -7,8 +7,12 @@
 // stay in core -- each has a core-side caller that isn't moving (apply-adhoc-diff.js /
 // hub-apply-routing.js; local-draft.js / local-agentic-write-draft.js; task-sources.js,
 // respectively), so moving them would break the one-way plugin-depends-on-core rule.
-// hub-rename.js, hub-restack.js, decompose-auto-merge.js, decompose-integration-gate.js,
-// wire-decomposed-blueprints.js moved here too -- each had no core-side caller.
+// hub-rename.js, hub-restack.js, decompose-auto-merge.js, decompose-integration-gate.js
+// moved here too -- each had no core-side caller. wire-decomposed-blueprints.js briefly
+// moved here too, then moved BACK to core the same day: agent-manager-hygiene's
+// decompose-flask-blueprint.js (moved there in S4a) also needs it -- a cross-plugin
+// dependency neither plugin should have on the other -- so it reaches back into core the
+// normal way instead.
 //
 // Coordinator sweep (2026-09-02). A RESOLUTION: decompose parent no longer goes to done/
 // and is forgotten -- applyAdhocDiff routes it to queue/coordinating/ with a `subTasks`
@@ -28,7 +32,7 @@ const { getConfig, ensureRegistered } = require('agent-manager/src/config.js');
 const { findTaskRecordById } = require('agent-manager/src/forensic-bundle.js');
 const { appendHistoryEvent } = require('agent-manager/src/task-history.js');
 const { runIntegrationGate, realExec } = require('./decompose-integration-gate.js');
-const { wireDecomposedBlueprints } = require('./wire-decomposed-blueprints.js');
+const { wireDecomposedBlueprints } = require('agent-manager/src/wire-decomposed-blueprints.js');
 const { taskCommitOnMain, STABLE_TERMINAL_STAGES } = require('agent-manager/src/task-disposition.js');
 const { autoMergeVerifiedMoveChild, isMechanicalMoveChild } = require('./decompose-auto-merge.js');
 const { ungatedMainPushAllowed } = require('agent-manager/src/lib/main-push-policy.js');
