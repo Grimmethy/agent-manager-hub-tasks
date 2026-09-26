@@ -36,15 +36,14 @@ require('./src/decompose-pass.js').register();
 
 // The hub KERNEL (S5e of the hub-tasks extraction, 2026-09-25): coordinator-sweep.js,
 // hub-rename.js, hub-restack.js, decompose-auto-merge.js, decompose-integration-gate.js,
-// rejected-hub-disposition-backfill.js, wire-decomposed-blueprints.js. None of these
-// register a task source (no .register(deps) call) -- coordinator-sweep.js and
-// rejected-hub-disposition-backfill.js are invoked directly by
-// agent-manager/scripts/queue-watcher.sh and scripts/pool-sweeps.sh as their own
-// `node <file>.js` processes (resolved by name via resolve_plugin_root, S5a); the rest are
-// required only by coordinator-sweep.js itself. Required here too, same reasoning as
-// agent-manager-hygiene's own register.js: so a plain require('agent-manager-hub-tasks')
-// (or a future test harness) sees the whole kernel, and so a require-cycle among them
-// never depends on load order.
+// rejected-hub-disposition-backfill.js. None of these register a task source (no
+// .register(deps) call) -- coordinator-sweep.js and rejected-hub-disposition-backfill.js
+// are invoked directly by agent-manager/scripts/queue-watcher.sh and
+// scripts/pool-sweeps.sh as their own `node <file>.js` processes (resolved by name via
+// resolve_plugin_root, S5a); the rest are required only by coordinator-sweep.js itself.
+// Required here too, same reasoning as agent-manager-hygiene's own register.js: so a
+// plain require('agent-manager-hub-tasks') (or a future test harness) sees the whole
+// kernel, and so a require-cycle among them never depends on load order.
 //
 // hub-serial.js, hub-status-grounding.js, and apply-adhoc-diff.js's queueSubTasks stay in
 // core permanently, not just "until S5" -- each has a core-side caller that isn't moving
@@ -53,10 +52,14 @@ require('./src/decompose-pass.js').register();
 // applyAdhocDiff directly), so moving them would break the one-way
 // plugin-depends-on-core rule. See Docs/hub-tasks-extraction-plan.md (agent-manager repo)
 // S5's row for the full correction.
+//
+// wire-decomposed-blueprints.js briefly moved here too, then moved BACK to core the same
+// day: agent-manager-hygiene's decompose-flask-blueprint.js (moved there in S4a) also
+// requires it -- a cross-plugin dependency neither plugin should have on the other.
+// coordinator-sweep.js now reaches it via agent-manager/src/wire-decomposed-blueprints.js.
 require('./src/coordinator-sweep.js');
 require('./src/hub-rename.js');
 require('./src/hub-restack.js');
 require('./src/decompose-auto-merge.js');
 require('./src/decompose-integration-gate.js');
 require('./src/rejected-hub-disposition-backfill.js');
-require('./src/wire-decomposed-blueprints.js');
