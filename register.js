@@ -16,9 +16,19 @@
 // see src/candidate-split-hub.js and core's candidate-split-hub-route.js.
 require('./src/candidate-split-hub.js').register();
 
+// Producer 1 (adhoc decompose): runDecomposePass, moved from core's decompose-pass.js
+// (2026-09-25). Installs itself as core's decompose-pass runner -- see
+// src/decompose-pass.js and core's decompose-pass-route.js. Unlike producer 4's filer,
+// core degrades gracefully (skips the preliminary/backstop decompose check) if this is
+// ever unregistered -- it is on the hot path for every adhoc draft, not a rare gated path.
+require('./src/decompose-pass.js').register();
+
 // Still to move, as S4b continues:
-//   - producer 1 (adhoc decompose): decompose-pass.js, draft-context.js (draftAdhocBranch),
-//     local-agentic-write-draft.js backstops, agentic-draft-common.js (parseSubTaskProposals)
+//   - the rest of producer 1's caller-side logic: draft-context.js's draftAdhocBranch and
+//     local-agentic-write-draft.js's give-up backstop / scope-complexity gate decide WHEN
+//     to call the decompose pass and what to do with a split verdict -- tightly coupled to
+//     core's draft-flow state (history events, task fields, the agentic tier ladder), not
+//     producer-specific. They stay in core, calling through decompose-pass-route.js.
 //   - the rest of producer 4's detection/routing logic: local-draft.js's
 //     finalizeCandidateFulfillment is tightly coupled to core's draft-pass machinery
 //     (recordImplement, appendHistoryEvent, concludeDraft) and needs its own producer hook,
