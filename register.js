@@ -23,7 +23,7 @@ require('./src/candidate-split-hub.js').register();
 // ever unregistered -- it is on the hot path for every adhoc draft, not a rare gated path.
 require('./src/decompose-pass.js').register();
 
-// Still to move, as S4b continues:
+// Still to move, as S4b's producer-side work continues:
 //   - the rest of producer 1's caller-side logic: draft-context.js's draftAdhocBranch and
 //     local-agentic-write-draft.js's give-up backstop / scope-complexity gate decide WHEN
 //     to call the decompose pass and what to do with a split verdict -- tightly coupled to
@@ -33,6 +33,30 @@ require('./src/decompose-pass.js').register();
 //     finalizeCandidateFulfillment is tightly coupled to core's draft-pass machinery
 //     (recordImplement, appendHistoryEvent, concludeDraft) and needs its own producer hook,
 //     not yet built -- it still decides candidateSplitRoute='hub' in core for now.
-// The hub kernel itself (coordinator-sweep, hub-priority, stacked-grounding, hub-status-
-// grounding, decompose-auto-merge, decompose-integration-gate,
-// rejected-hub-disposition-backfill, queueSubTasks) stays in core until S5.
+
+// The hub KERNEL (S5e of the hub-tasks extraction, 2026-09-25): coordinator-sweep.js,
+// hub-rename.js, hub-restack.js, decompose-auto-merge.js, decompose-integration-gate.js,
+// rejected-hub-disposition-backfill.js, wire-decomposed-blueprints.js. None of these
+// register a task source (no .register(deps) call) -- coordinator-sweep.js and
+// rejected-hub-disposition-backfill.js are invoked directly by
+// agent-manager/scripts/queue-watcher.sh and scripts/pool-sweeps.sh as their own
+// `node <file>.js` processes (resolved by name via resolve_plugin_root, S5a); the rest are
+// required only by coordinator-sweep.js itself. Required here too, same reasoning as
+// agent-manager-hygiene's own register.js: so a plain require('agent-manager-hub-tasks')
+// (or a future test harness) sees the whole kernel, and so a require-cycle among them
+// never depends on load order.
+//
+// hub-serial.js, hub-status-grounding.js, and apply-adhoc-diff.js's queueSubTasks stay in
+// core permanently, not just "until S5" -- each has a core-side caller that isn't moving
+// (apply-adhoc-diff.js / hub-apply-routing.js need hub-serial.js; local-draft.js /
+// local-agentic-write-draft.js need hub-status-grounding.js; task-sources.js calls
+// applyAdhocDiff directly), so moving them would break the one-way
+// plugin-depends-on-core rule. See Docs/hub-tasks-extraction-plan.md (agent-manager repo)
+// S5's row for the full correction.
+require('./src/coordinator-sweep.js');
+require('./src/hub-rename.js');
+require('./src/hub-restack.js');
+require('./src/decompose-auto-merge.js');
+require('./src/decompose-integration-gate.js');
+require('./src/rejected-hub-disposition-backfill.js');
+require('./src/wire-decomposed-blueprints.js');

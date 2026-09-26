@@ -95,9 +95,15 @@ test('writeArtifact: a hub-routed split queues sub-tasks; the pipeline never tou
 });
 
 test('writeArtifact: a split WITHOUT the hub route still goes to the candidate doc (unchanged behaviour)', () => {
-  const t = parent();
+  // A source name nothing registers, on purpose -- unlike a lone `node --test` run of just
+  // this file, the full plugin suite now also loads coordinator-sweep.js (S5e), whose own
+  // module-load-time ensureRegistered() call really does register agent-manager-hygiene's
+  // function_length_fix (this fixture's real `source`) with a candidatesPath in the SAME
+  // process. Using the real 'function_length_fix' name here made this test's premise --
+  // "no registered source with a candidatesPath" -- depend on ambient, cross-file registry
+  // state instead of on this test's own setup. Found running the full S5e-updated suite.
+  const t = parent({ source: 'no-such-registered-source-for-this-test' });
   delete t.candidateSplitRoute;
-  // No registered source with a candidatesPath here -> the doc-split path is taken and complains about exactly that.
   assert.throws(() => writeArtifact(t, '/nonexistent-repo', pipeline()), /has candidateSplitProposals but its source/);
 });
 
