@@ -45,3 +45,26 @@ Log the error to `console.error` with context, so human operators can see it. Th
 
 Benefits:  
 Operators can now detect filesystem failures during backfills — preventing silent data misalignment or misconfiguration. The fix is minimal, uses only stdlib logging, and doesn’t require metrics or third-party tools — aligning with the project’s capabilities.
+
+### AC-3 · Silent smoke-test failure in entrypoint gate
+Strength: Strong
+Files: src/decompose-integration-gate.js
+Snippet:
+```
+    try {
+      out = String(exec('python3', ['.decompose_entrypoint_smoke.py', path.basename(sourceFile)],
+        { cwd: path.join(branchWt, srcDir), timeout: 30_000 }) || '');
+    } catch (e) {
+      smokeErr = e;
+      out = String(e.stdout || '');
+    }
+```
+
+Problem:
+In the entrypoint smoke-test gate, the `try/catch` around the `exec` call (lines 208-211) correctly captures any exception into `smokeErr`. The preceding `if` branch then handles the expected "dependencies not installed" case by calling `record('entrypoint', 'skip', …)`. However, the subsequent `else if (smokeErr)` conditional branch — which fires precisely when a *genuine* smoke-test failure occurred (a real import error in the module under test, a syntax error, a runtime crash, or the 30-second timeout) — has an empty body. It neither logs the error, calls `record(...)` with a failure outcome, nor rethrows. The result is that the caller never learns the smoke test failed, and the gate proceeds as if the entrypoint were healthy.
+
+Solution:
+In the `else if (smokeErr)` branch body, surface the failure before falling through. Extract a one-line detail from `smokeErr.stderr`, `smokeErr.stdout`, or `smokeErr.message`; emit it via `console.error` prefixed with the source file basename for context; call `record('entrypoint', 'fail', …)` with the last non-empty line of the detail to stay consistent with the existing `record('entrypoint', 'skip', …)` convention in the adjacent `if` branch; and rethrow `smokeErr` so a caller can skip or abort the branch. No new dependency or telemetry primitive is introduced — only `console.error` and `record`, both already used in this file.
+
+Benefits:
+A genuine smoke-test failure becomes visible in the console log with enough context (source file name plus the error detail) to diagnose it, is recorded as a `fail` outcome consistent with the existing `skip` recording, and is propagated to the caller via the rethrown exception so the gate can skip or abort the branch rather than silently treating a broken entrypoint as healthy.
