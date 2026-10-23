@@ -797,3 +797,33 @@ test('a strict-merge (non-stacked file-decompose) hub: a merged child is done, a
   assert.equal(hub.progress.built, 2);
   assert.equal(hub.progress.done, 1);
 });
+
+
+// --- a fully built nested hub counts as pending-merge for its parent (2026-10-23, chat plugin HUB0003) -----------------------------------------------
+// HUB0003-01 became sub-hub HUB0004 (3 pieces, all built on the parent's stacked branch). It stayed 'in-progress', so hub-priority.js held HUB0003-02..05 behind
+// it for ever. A sub-hub whose pieces are all merged or pending-merge is 'pending-merge'; one with an open piece, a blocked one, or none stays 'in-progress'.
+test('classifyChildStatus: a coordinating sub-hub with every piece built or merged is pending-merge, otherwise in-progress', () => {
+  const sub = (...statuses) => ({ state: 'coordinating', task: { subTasks: statuses.map((status, i) => ({ id: `p${i}`, status })) } });
+  assert.equal(classifyChildStatus(sub('pending-merge', 'pending-merge', 'pending-merge')), 'pending-merge');
+  assert.equal(classifyChildStatus(sub('merged', 'pending-merge', 'noop')), 'pending-merge');
+  assert.equal(classifyChildStatus(sub('pending-merge', 'in-progress')), 'in-progress', 'one piece still open');
+  assert.equal(classifyChildStatus(sub('pending-merge', 'blocked')), 'in-progress', 'a blocked piece is not built');
+  assert.equal(classifyChildStatus({ state: 'coordinating', task: { subTasks: [] } }), 'in-progress', 'no pieces');
+  assert.equal(classifyChildStatus({ state: 'coordinating', task: {} }), 'in-progress');
+  assert.equal(classifyChildStatus({ state: 'adhoc', task: { subTasks: [{ status: 'pending-merge' }] } }), 'in-progress', 'only a coordinating record is a hub');
+});
+
+test('end to end: a piece behind a fully built sub-hub on the same stacked branch is no longer held (hubHasUnmergedEarlierSibling)', () => {
+  const { hubHasUnmergedEarlierSibling } = require('agent-manager/src/hub-priority.js');
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subhub-')); const coord = path.join(dir, 'queue', 'coordinating'); fs.mkdirSync(coord, { recursive: true });
+  const BR = 'agent/decompose-parent-1';
+  const subHub = { id: 'P-01', stacked: { branch: BR, seq: 1, total: 2 }, subTasks: [{ id: 'S-01', status: 'pending-merge' }, { id: 'S-02', status: 'pending-merge' }] };
+  fs.writeFileSync(path.join(coord, 'P-01.json'), JSON.stringify(subHub));
+  const parent = { id: 'P', subTasks: [{ id: 'P-01', status: classifyChildStatus({ state: 'coordinating', task: subHub }) }, { id: 'P-02', status: 'in-progress' }] };
+  const second = { id: 'P-02', stacked: { branch: BR, seq: 2, total: 2 }, promptContext: { decomposedFrom: 'P' } };
+  assert.equal(parent.subTasks[0].status, 'pending-merge');
+  assert.equal(hubHasUnmergedEarlierSibling(dir, second, parent).blocked, false);
+  parent.subTasks[0].status = 'in-progress';   // what the sweep reported before the fix
+  assert.equal(hubHasUnmergedEarlierSibling(dir, second, parent).blocked, true, 'the old status held the second piece');
+});
