@@ -314,6 +314,7 @@ function runStackedWiring(parent, repoRoot) {
       moves: parent.wiringMoves, exec: realExec,
     });
   } catch (e) {
+    console.error(`[coordinator-sweep] runStackedWiring failed: ${e && e.message ? e.message : String(e)}${e && e.stack ? `\n${e.stack}` : ''}`);
     return { ok: false, detail: e && e.message ? e.message : String(e) };
   }
 }
