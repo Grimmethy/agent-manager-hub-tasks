@@ -194,6 +194,14 @@ function classifyChildStatus(rec) {
   }
   if (state === 'archived_no_action') return 'abandoned';
   if (state === 'blocked' || state === 'needs-clarification' || state === 'awaiting-confirm') return state;
+  // A NESTED hub (queue/coordinating/) whose every piece is finished -- merged, or built on the shared stacked branch and waiting for a merge -- is itself
+  // 'pending-merge' for the hub above it (2026-10-23, chat plugin HUB0003: its first piece became sub-hub HUB0004 with all three pieces built on the parent's
+  // stacked branch; reported 'in-progress' for ever, so hub-priority.js held pieces 2-5 behind it, a deadlock no merge could clear because the sub-hub's pieces
+  // merge only with the whole branch). A sub-hub with any piece still open, or no pieces, stays 'in-progress'.
+  if (state === 'coordinating') {
+    const subs = Array.isArray(task.subTasks) ? task.subTasks : [];
+    if (subs.length > 0 && subs.every((sub) => sub && typeof sub.status === 'string' && (TERMINAL_GOOD.has(sub.status) || sub.status === 'pending-merge'))) return 'pending-merge';
+  }
   return 'in-progress'; // pending / adhoc / drafting / review / approved / coordinating
 }
 
