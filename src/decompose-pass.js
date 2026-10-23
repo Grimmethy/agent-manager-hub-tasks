@@ -23,6 +23,7 @@
 //     without a single edit, or answered RESOLUTION: decompose twice without usable JSON.
 
 const { parseSubTaskProposals } = require('agent-manager/src/agentic-draft-common.js');
+const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext } = require('./cross-hub-prereqs.js');
 
 // The size/shape rule the local model needs spelled out -- its whole failure mode is
 // "many edits scattered through a 6000-line file", which a new self-contained module
@@ -130,6 +131,7 @@ async function runDecomposePass(task, {
   call = require('agent-manager/src/local-client.js').call,
   claudeCall = null,
   priorAttemptBlock = null,
+  crossHubContext, // undefined = read the real queue and repo; null = skip the check (tests)
 } = {}) {
   const useClaude = process.env.AGENT_MANAGER_CLAUDE_DECOMPOSE === 'true';
   const doCall = useClaude
@@ -162,7 +164,29 @@ async function runDecomposePass(task, {
     return null; // a failed decompose call is non-fatal -- the caller falls back to its normal path
   }
 
-  return extractSubTasks(result && result.response);
+  const split = extractSubTasks(result && result.response);
+  return split ? withCrossHubPrerequisites(split, task, crossHubContext) : split;
+}
+
+// Mark pieces that need a file only another open hub's unmerged branch has (cross-hub-prereqs.js). `crossHubContext` is injectable for tests; the default reads the
+// real queue and repo. Fails open: any error leaves the split exactly as the model produced it.
+function withCrossHubPrerequisites(split, task, crossHubContext) {
+  try {
+    const ctx = crossHubContext !== undefined ? crossHubContext : realCrossHubContext(task);
+    if (!ctx) return split;
+    return { ...split, subTasks: annotateWithPrerequisites(split.subTasks, findCrossHubPrerequisites(split.subTasks, ctx)) };
+  } catch { return split; }
+}
+
+function realCrossHubContext(task) {
+  const { getConfig } = require('agent-manager/src/config.js');
+  const { findTaskRecordById } = require('agent-manager/src/forensic-bundle.js');
+  const { createRealGitRunner } = require('agent-manager/src/git-runner.js');
+  const { pipelineDir, repoRoot } = getConfig();
+  const { mainBranch } = createRealGitRunner(repoRoot);
+  const git = (args) => require('child_process').execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
+  const ownBranch = task && task.stacked && task.stacked.branch ? task.stacked.branch : null;
+  return buildRealContext({ pipelineDir, git, mainBranch, ownBranch, findRecord: findTaskRecordById });
 }
 
 function register() {
