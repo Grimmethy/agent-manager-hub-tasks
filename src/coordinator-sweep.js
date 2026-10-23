@@ -319,7 +319,7 @@ function runStackedWiring(parent, repoRoot) {
   }
 }
 
-function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, runWiring = runStackedWiring, runAutoMerge = autoMergeVerifiedMoveChild } = {}) {
+async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, runWiring = runStackedWiring, runAutoMerge = autoMergeVerifiedMoveChild } = {}) {
   const coordDir = path.join(pipelineDir, 'queue', 'coordinating');
   const doneDir = path.join(pipelineDir, 'queue', 'done');
   let resolvedRepoRoot = repoRoot;
@@ -339,11 +339,19 @@ function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, run
     return summary;
   }
 
-  for (const name of names) {
+  const readResults = await Promise.allSettled(
+    names.map((name) => fs.promises.readFile(path.join(coordDir, name), 'utf8'))
+  );
+  for (let _si = 0; _si < names.length; _si++) {
+    const name = names[_si];
     const file = path.join(coordDir, name);
     let parent;
+    if (readResults[_si].status !== 'fulfilled') {
+      summary.errors += 1;
+      continue; // a malformed coordinating file is not this sweep's problem to fix
+    }
     try {
-      parent = JSON.parse(fs.readFileSync(file, 'utf8'));
+      parent = JSON.parse(readResults[_si].value);
     } catch {
       summary.errors += 1;
       continue; // a malformed coordinating file is not this sweep's problem to fix
