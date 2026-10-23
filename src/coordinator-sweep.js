@@ -40,6 +40,7 @@ const { hubHasUnmergedEarlierSibling } = require('agent-manager/src/hub-priority
 const { restackHubChain } = require('./hub-restack.js');
 const { assignMissingHubSerials, retitleHubMembers } = require('agent-manager/src/hub-serial.js');
 const { repairStaleHubRefs } = require('./hub-rename.js');
+const { applyCarryHold } = require('./carry-hold.js');
 
 // S4a of the hub-tasks extraction (2026-09-24): populate the registry with this repo's
 // built-ins AND any AGENT_MANAGER_REGISTER_PATH plugin sources (agent-manager-hygiene)
@@ -409,7 +410,9 @@ function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, run
     for (const st of parent.subTasks) {
       const rec = st && st.id ? findTaskRecordById(pipelineDir, st.id) : null;
       recById.set(st && st.id, rec);
-      st.status = classifyChildStatus(rec);
+      const carried = applyCarryHold(st, classifyChildStatus(rec), Date.now());
+      st.status = carried.status;
+      if (carried.event) appendHistoryEvent(parent, 'advisory', carried.event);
     }
     // A hub built before "one hub = one stacked chain" may be mixed (some pieces stacked, some independent and stuck behind a merge):
     // put its not-yet-started pieces onto the chain (hub-restack.js). Before the held-marker below, which reads the fresh fields.
