@@ -24,6 +24,7 @@
 
 const { parseSubTaskProposals } = require('agent-manager/src/agentic-draft-common.js');
 const { rawSubtaskItems, attachFiles, normalizeFiles } = require('./piece-files.js');
+const { resolveContradictions } = require('./piece-lint.js');
 const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext } = require('./cross-hub-prereqs.js');
 
 // The size/shape rule the local model needs spelled out -- its whole failure mode is
@@ -171,7 +172,7 @@ async function runDecomposePass(task, {
   }
 
   const split = extractSubTasks(result && result.response);
-  return split ? withCrossHubPrerequisites(withCleanFiles(split), task, crossHubContext) : split;
+  return split ? withCrossHubPrerequisites(withLint(withCleanFiles(split)), task, crossHubContext) : split;
 }
 
 // Mark pieces that need a file only another open hub's unmerged branch has (cross-hub-prereqs.js). `crossHubContext` is injectable for tests; the default reads the
@@ -186,6 +187,11 @@ function withCleanFiles(split) {
     } catch { /* no directory prefixes known */ }
     return { ...split, subTasks: normalizeFiles(split.subTasks, repoPaths) };
   } catch { return split; }
+}
+
+// Clarify a piece that both forbids and edits the same file (piece-lint.js; it already fails open per piece, and split.subTasks is always an array here).
+function withLint(split) {
+  return { ...split, subTasks: resolveContradictions(split.subTasks) };
 }
 
 function withCrossHubPrerequisites(split, task, crossHubContext) {
