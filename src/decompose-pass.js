@@ -25,6 +25,7 @@
 const { parseSubTaskProposals } = require('agent-manager/src/agentic-draft-common.js');
 const { rawSubtaskItems, attachFiles, normalizeFiles } = require('./piece-files.js');
 const { resolveContradictions } = require('./piece-lint.js');
+const { validContract, withContract, gitRepoHas, annotateUnverifiedNames } = require('./contract-block.js');
 const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext } = require('./cross-hub-prereqs.js');
 
 // The size/shape rule the local model needs spelled out -- its whole failure mode is
@@ -33,6 +34,9 @@ const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext }
 const ONE_FILE_RULE = 'Each piece must touch ONE file. Strongly prefer a NEW self-contained file/module over pieces that need edits scattered through a large existing file -- a fresh file written in one pass is what the local model can actually land; broad surgery in a big file is what it fails at.';
 
 // Asked for in both prompts: the declared scope the diff-sanity gate reads (piece-files.js). 2026-10-23: pieces without it were judged by a keyword scan.
+// Asked for in the preliminary prompt (the object form can carry a top-level key; the bare-array form of the other prompt cannot, so it is not asked there).
+const CONTRACT_HINT = 'Optionally add a top-level "contract": a short string (at most 2000 characters) listing the exact names (functions, JSON fields, file formats, environment variables) that MORE THAN ONE subtask relies on, each with where it is defined or "DEFINED BY SUBTASK n". Pieces are drafted separately; this is how they agree on names.';
+
 const FILES_HINT = 'Add "files": [exact repo-relative paths the piece creates or edits] to EVERY subtask. A docs-only piece lists only its doc paths. Any file the piece text names as something to change or add to MUST be in its files.';
 
 function preliminaryPrompt(task) {
@@ -65,6 +69,7 @@ function preliminaryPrompt(task) {
     '{"one_pass": false, "subtasks": [{"title": "short imperative title", "rawText": "a 2-4 sentence description of just this piece -- someone implementing only this should not need the original task open, but keep it brief"}, ...]}',
     'Optionally add "after": N to a subtask (N = 0-based index of an EARLIER subtask it cannot start until that one is merged, e.g. it edits a file the earlier one creates).',
     FILES_HINT,
+    CONTRACT_HINT,
     'Give 2 to 6 subtasks when splitting.',
   ].join('\n');
 }
@@ -118,7 +123,10 @@ function extractSubTasks(text) {
       if (obj && obj.one_pass === true) return null;
       if (obj && Array.isArray(obj.subtasks)) {
         const subs = parseSubTaskProposals(JSON.stringify(obj.subtasks));
-        if (subs && subs.length >= 2) return { subTasks: attachFiles(subs, obj.subtasks) };
+        if (subs && subs.length >= 2) {
+          const contract = validContract(obj.contract);
+          return { subTasks: attachFiles(subs, obj.subtasks), ...(contract ? { contract } : {}) };
+        }
         return null;
       }
     } catch { /* fall through to array parse */ }
@@ -138,6 +146,7 @@ async function runDecomposePass(task, {
   call = require('agent-manager/src/local-client.js').call,
   claudeCall = null,
   priorAttemptBlock = null,
+  repoHas, // undefined = `git grep -qw` in the repo root (contract-block.js); a function(name) -> boolean for tests
   crossHubContext, // undefined = read the real queue and repo; null = skip the check (tests)
 } = {}) {
   const useClaude = process.env.AGENT_MANAGER_CLAUDE_DECOMPOSE === 'true';
@@ -172,7 +181,7 @@ async function runDecomposePass(task, {
   }
 
   const split = extractSubTasks(result && result.response);
-  return split ? withCrossHubPrerequisites(withLint(withCleanFiles(split)), task, crossHubContext) : split;
+  return split ? withCrossHubPrerequisites(withContractAndNames(withLint(withCleanFiles(split)), repoHas), task, crossHubContext) : split;
 }
 
 // Mark pieces that need a file only another open hub's unmerged branch has (cross-hub-prereqs.js). `crossHubContext` is injectable for tests; the default reads the
@@ -192,6 +201,16 @@ function withCleanFiles(split) {
 // Clarify a piece that both forbids and edits the same file (piece-lint.js; it already fails open per piece, and split.subTasks is always an array here).
 function withLint(split) {
   return { ...split, subTasks: resolveContradictions(split.subTasks) };
+}
+
+// Put the shared contract on every piece and flag names nobody defined (contract-block.js). Fails open.
+function withContractAndNames(split, injected) {
+  try {
+    let repoHas = injected || (() => true);
+    if (!injected) { try { repoHas = gitRepoHas(require('agent-manager/src/config.js').getConfig().repoRoot); } catch { /* no repo: nothing can be verified, flag nothing */ } }
+    const withC = withContract(split.subTasks, split.contract);
+    return { ...split, subTasks: annotateUnverifiedNames(withC, split.contract, repoHas) };
+  } catch { return split; }
 }
 
 function withCrossHubPrerequisites(split, task, crossHubContext) {
