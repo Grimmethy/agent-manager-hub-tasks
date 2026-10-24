@@ -113,3 +113,14 @@ test('writeArtifact: a hub-routed split throws a clear error when no filer is re
   assert.throws(() => writeArtifact(t, '/nonexistent-repo', pipeline()), /no hub-task filer is registered/);
   require('./candidate-split-hub.js').register(); // re-arm -- register.js itself is require-cached, so it won't re-run
 });
+
+test('applyCandidateSplitAsHub lists owner-gated pieces in ownerGates, and an empty list when none is gated', () => {
+  const none = applyCandidateSplitAsHub(parent(), pipeline());
+  assert.deepEqual(none.ownerGates, []);
+  const p = parent();
+  p.candidateSplitProposals[1] = { ...p.candidateSplitProposals[1], problem: 'This part needs owner approval before any file is touched.' };
+  const gated = applyCandidateSplitAsHub(p, pipeline());
+  assert.equal(gated.ownerGates.length, 1);
+  assert.equal(gated.ownerGates[0].why, 'owner approval');
+  assert.match(gated.ownerGates[0].title, /2\/3/);
+});
