@@ -23,12 +23,16 @@
 //     without a single edit, or answered RESOLUTION: decompose twice without usable JSON.
 
 const { parseSubTaskProposals } = require('agent-manager/src/agentic-draft-common.js');
+const { rawSubtaskItems, attachFiles, normalizeFiles } = require('./piece-files.js');
 const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext } = require('./cross-hub-prereqs.js');
 
 // The size/shape rule the local model needs spelled out -- its whole failure mode is
 // "many edits scattered through a 6000-line file", which a new self-contained module
 // sidesteps.
 const ONE_FILE_RULE = 'Each piece must touch ONE file. Strongly prefer a NEW self-contained file/module over pieces that need edits scattered through a large existing file -- a fresh file written in one pass is what the local model can actually land; broad surgery in a big file is what it fails at.';
+
+// Asked for in both prompts: the declared scope the diff-sanity gate reads (piece-files.js). 2026-10-23: pieces without it were judged by a keyword scan.
+const FILES_HINT = 'Add "files": [exact repo-relative paths the piece creates or edits] to EVERY subtask. A docs-only piece lists only its doc paths. Any file the piece text names as something to change or add to MUST be in its files.';
 
 function preliminaryPrompt(task) {
   const ctx = (task && task.promptContext) || {};
@@ -59,6 +63,7 @@ function preliminaryPrompt(task) {
     // off mid-JSON writing an over-long rawText, blocking the task) this closes.
     '{"one_pass": false, "subtasks": [{"title": "short imperative title", "rawText": "a 2-4 sentence description of just this piece -- someone implementing only this should not need the original task open, but keep it brief"}, ...]}',
     'Optionally add "after": N to a subtask (N = 0-based index of an EARLIER subtask it cannot start until that one is merged, e.g. it edits a file the earlier one creates).',
+    FILES_HINT,
     'Give 2 to 6 subtasks when splitting.',
   ].join('\n');
 }
@@ -80,6 +85,7 @@ function postExhaustionPrompt(task, priorInvestigation, priorAttempt, opener) {
     '',
     'Answer with ONLY a JSON array, nothing else:',
     '[{"title": "short imperative title", "rawText": "a 2-4 sentence description of just this piece"}, ...]',
+    FILES_HINT,
     'Optionally add "after": N (0-based index of an EARLIER piece it depends on). Give 2 to 6 pieces that together cover the whole task with nothing dropped. Keep each rawText to 2-4 sentences -- with up to 6 pieces, a verbose description per piece risks the whole array getting cut off before it finishes.',
   ].filter(Boolean).join('\n');
 }
@@ -111,14 +117,14 @@ function extractSubTasks(text) {
       if (obj && obj.one_pass === true) return null;
       if (obj && Array.isArray(obj.subtasks)) {
         const subs = parseSubTaskProposals(JSON.stringify(obj.subtasks));
-        if (subs && subs.length >= 2) return { subTasks: subs };
+        if (subs && subs.length >= 2) return { subTasks: attachFiles(subs, obj.subtasks) };
         return null;
       }
     } catch { /* fall through to array parse */ }
   }
   // Bare array (post-exhaustion mode, or a model that skipped the wrapper).
   const subs = parseSubTaskProposals(raw);
-  if (subs && subs.length >= 2) return { subTasks: subs };
+  if (subs && subs.length >= 2) return { subTasks: attachFiles(subs, rawSubtaskItems(raw)) };
   return null;
 }
 
@@ -165,11 +171,23 @@ async function runDecomposePass(task, {
   }
 
   const split = extractSubTasks(result && result.response);
-  return split ? withCrossHubPrerequisites(split, task, crossHubContext) : split;
+  return split ? withCrossHubPrerequisites(withCleanFiles(split), task, crossHubContext) : split;
 }
 
 // Mark pieces that need a file only another open hub's unmerged branch has (cross-hub-prereqs.js). `crossHubContext` is injectable for tests; the default reads the
 // real queue and repo. Fails open: any error leaves the split exactly as the model produced it.
+// Clean the declared `files` (piece-files.js). repoPaths comes from `git ls-files` in the repo root; any error just means no directory prefixes are known.
+function withCleanFiles(split) {
+  try {
+    let repoPaths = [];
+    try {
+      const { getConfig } = require('agent-manager/src/config.js');
+      repoPaths = require('child_process').execFileSync('git', ['ls-files'], { cwd: getConfig().repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, maxBuffer: 32 * 1024 * 1024 }).split('\n').filter(Boolean);
+    } catch { /* no directory prefixes known */ }
+    return { ...split, subTasks: normalizeFiles(split.subTasks, repoPaths) };
+  } catch { return split; }
+}
+
 function withCrossHubPrerequisites(split, task, crossHubContext) {
   try {
     const ctx = crossHubContext !== undefined ? crossHubContext : realCrossHubContext(task);
