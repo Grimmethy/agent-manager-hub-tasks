@@ -62,6 +62,7 @@ function applyCandidateSplitAsHub(task, pipelineDir) {
     subTasks: queued.map((t) => ({ id: t.id, title: t.title, status: 'pending' })),
     hubSerial: queued.hubSerial,
     hubLabel: queued.hubLabel,
+    ownerGates: queued.ownerGates, // same shape as an adhoc decompose (core's buildDecomposedPlan): pieces that wait on the owner
   };
 }
 
