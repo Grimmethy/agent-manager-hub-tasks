@@ -250,7 +250,16 @@ function childPhase(status, strictMergeHub = false) {
 const STUCK_STATES = new Set(['needs-clarification', 'blocked']);
 const DEP_UNCLEARABLE = new Set(['needs-clarification', 'blocked', 'abandoned']);
 
-function stuckEscalateMs() {
+// A PREMIUM hub (premiumPriority on its record) escalates in hours: 2026-10-23, the multi-chat hubs sat stuck for a day or more with nobody working
+// the blocked piece, so lanes ran dry and borrowed other projects' work. AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS (default 6; 0 = never;
+// anything invalid falls back to 6). Called with no argument (or a non-premium hub) it returns exactly the days-based value.
+function stuckEscalateMs(hub) {
+  if (hub && hub.premiumPriority === true) {
+    const rawH = process.env.AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS;
+    const hours = rawH == null || rawH === '' ? 6 : Number(rawH);
+    if (!Number.isFinite(hours) || hours < 0) return 6 * 3600000;
+    return hours * 3600000;
+  }
   const raw = process.env.AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS;
   const days = raw == null || raw === '' ? 3 : Number(raw);
   if (!Number.isFinite(days) || days < 0) return 3 * 86400000;
@@ -472,13 +481,13 @@ function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, run
           summary.blocked = (summary.blocked || 0) + 1;
         }
         parent.blockedReason = `${stuck.length} sub-task(s) can't proceed: ${stuck.map((s) => `${s.id.replace(/^adhoc-/, '')} (${s.why})`).join('; ')}`.slice(0, 400);
-        const escalateMs = stuckEscalateMs();
+        const escalateMs = stuckEscalateMs(parent);
         const stuckForMs = Date.now() - Date.parse(parent.coordinatorBlocked.since || now);
         if (escalateMs > 0 && stuckForMs >= escalateMs && !parent.coordinatorBlocked.escalated) {
           parent.coordinatorBlocked.escalated = true;
           parent.coordinatorBlocked.escalatedAt = now;
           appendHistoryEvent(parent, 'advisory',
-            `coordinator hub stuck ${Math.floor(stuckForMs / 86400000)}d -- needs a human: resolve/requeue/archive ${stuck.map((s) => s.id).join(', ')}, or archive this hub`);
+            `coordinator hub stuck ${stuckForMs >= 86400000 ? `${Math.floor(stuckForMs / 86400000)}d` : `${Math.floor(stuckForMs / 3600000)}h`} -- needs a human: resolve/requeue/archive ${stuck.map((s) => s.id).join(', ')}, or archive this hub`);
           summary.escalated = (summary.escalated || 0) + 1;
         }
       } else if (parent.coordinatorBlocked) {
@@ -640,7 +649,7 @@ function moveToDone(srcFile, doneDir, name, parent) {
   } catch { /* best-effort -- next tick retries */ }
 }
 
-module.exports = { coordinatorSweep, classifyChildStatus, childPhase, findStuckChildren, TERMINAL_GOOD, sanitizeTaskDisposition };
+module.exports = { coordinatorSweep, stuckEscalateMs, classifyChildStatus, childPhase, findStuckChildren, TERMINAL_GOOD, sanitizeTaskDisposition };
 
 if (require.main === module) {
   const { pipelineDir, repoRoot } = getConfig();

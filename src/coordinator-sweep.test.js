@@ -13,7 +13,7 @@ const path = require('path');
 process.env.AGENT_MANAGER_REPO_ROOT = require('os').tmpdir();
 process.env.AGENT_MANAGER_PIPELINE_DIR = process.env.AGENT_MANAGER_REPO_ROOT;
 
-const { coordinatorSweep, classifyChildStatus, sanitizeTaskDisposition } = require('./coordinator-sweep.js');
+const { coordinatorSweep, stuckEscalateMs, classifyChildStatus, sanitizeTaskDisposition } = require('./coordinator-sweep.js');
 
 // This file's own auto-merge fixtures use 'script-extract' as a realistic stand-in
 // mechanical move; the kind is registered automatically since coordinator-sweep.js
@@ -826,4 +826,61 @@ test('end to end: a piece behind a fully built sub-hub on the same stacked branc
   assert.equal(hubHasUnmergedEarlierSibling(dir, second, parent).blocked, false);
   parent.subTasks[0].status = 'in-progress';   // what the sweep reported before the fix
   assert.equal(hubHasUnmergedEarlierSibling(dir, second, parent).blocked, true, 'the old status held the second piece');
+});
+
+function stuckHub(id, hoursAgo, extra = {}) {
+  const since = new Date(Date.now() - hoursAgo * 3600000).toISOString();
+  return {
+    id, status: 'coordinating', history: [], ...extra,
+    coordinatorBlocked: { signature: 'w-0:child is in blocked', since, children: [{ id: 'w-0', why: 'child is in blocked' }], escalated: false },
+    subTasks: [{ id: 'w-0', title: 'only', status: 'blocked' }],
+  };
+}
+function withEnv(name, value, fn) {
+  const old = process.env[name];
+  if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  try { return fn(); } finally { if (old === undefined) delete process.env[name]; else process.env[name] = old; }
+}
+
+test('stuckEscalateMs: no argument and a non-premium hub keep the days value; a premium hub uses the hours value', () => {
+  assert.equal(stuckEscalateMs(), 3 * 86400000);
+  assert.equal(stuckEscalateMs({ premiumPriority: false }), 3 * 86400000);
+  assert.equal(stuckEscalateMs({ premiumPriority: true }), 6 * 3600000);
+  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '2', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 2 * 3600000));
+  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '0', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 0));
+  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', 'nope', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 6 * 3600000));
+  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '-1', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 6 * 3600000));
+  withEnv('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS', '1', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 6 * 3600000, 'the days setting does not leak into premium hubs'));
+});
+
+test('a premium hub stuck for 7 hours escalates (history says hours); a non-premium hub stuck for 7 hours does not', () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', stuckHub('hub-prem', 7, { premiumPriority: true }));
+  write(dir, 'coordinating', stuckHub('hub-plain', 7));
+  write(dir, 'blocked', { id: 'w-0' });
+  const summary = coordinatorSweep({ pipelineDir: dir });
+  assert.equal(summary.escalated, 1);
+  const prem = readParent(dir, 'coordinating', 'hub-prem');
+  assert.equal(prem.coordinatorBlocked.escalated, true);
+  assert.match(prem.history.at(-1).detail, /stuck 7h -- needs a human/);
+  assert.equal(readParent(dir, 'coordinating', 'hub-plain').coordinatorBlocked.escalated, false);
+});
+
+test('a premium hub stuck for 1 hour does not escalate, and the hours setting 0 disables it', () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', stuckHub('hub-young', 1, { premiumPriority: true }));
+  write(dir, 'blocked', { id: 'w-0' });
+  assert.equal(coordinatorSweep({ pipelineDir: dir }).escalated, undefined);
+  const dir2 = makePipeline();
+  write(dir2, 'coordinating', stuckHub('hub-zero', 30, { premiumPriority: true }));
+  write(dir2, 'blocked', { id: 'w-0' });
+  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '0', () => assert.equal(coordinatorSweep({ pipelineDir: dir2 }).escalated, undefined));
+});
+
+test('the escalation history line still reads days once a hub has been stuck for more than a day', () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', stuckHub('hub-old', 30, { premiumPriority: true }));
+  write(dir, 'blocked', { id: 'w-0' });
+  coordinatorSweep({ pipelineDir: dir });
+  assert.match(readParent(dir, 'coordinating', 'hub-old').history.at(-1).detail, /stuck 1d -- needs a human/);
 });
