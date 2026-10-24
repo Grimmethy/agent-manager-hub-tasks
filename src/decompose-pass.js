@@ -25,6 +25,7 @@
 const { parseSubTaskProposals } = require('agent-manager/src/agentic-draft-common.js');
 const { rawSubtaskItems, attachFiles, normalizeFiles } = require('./piece-files.js');
 const { resolveContradictions } = require('./piece-lint.js');
+const { annotateWithImpact, gitGrep } = require('./impact-files.js');
 const { validContract, withContract, gitRepoHas, annotateUnverifiedNames } = require('./contract-block.js');
 const { findCrossHubPrerequisites, annotateWithPrerequisites, buildRealContext } = require('./cross-hub-prereqs.js');
 
@@ -146,6 +147,7 @@ async function runDecomposePass(task, {
   call = require('agent-manager/src/local-client.js').call,
   claudeCall = null,
   priorAttemptBlock = null,
+  impactGrep, // undefined = `git grep -lw` in the repo root (impact-files.js); a function(name) -> paths for tests, null skips the step
   repoHas, // undefined = `git grep -qw` in the repo root (contract-block.js); a function(name) -> boolean for tests
   crossHubContext, // undefined = read the real queue and repo; null = skip the check (tests)
 } = {}) {
@@ -181,7 +183,7 @@ async function runDecomposePass(task, {
   }
 
   const split = extractSubTasks(result && result.response);
-  return split ? withCrossHubPrerequisites(withContractAndNames(withLint(withCleanFiles(split)), repoHas), task, crossHubContext) : split;
+  return split ? withCrossHubPrerequisites(withImpact(withContractAndNames(withLint(withCleanFiles(split)), repoHas), impactGrep), task, crossHubContext) : split;
 }
 
 // Mark pieces that need a file only another open hub's unmerged branch has (cross-hub-prereqs.js). `crossHubContext` is injectable for tests; the default reads the
@@ -210,6 +212,16 @@ function withContractAndNames(split, injected) {
     if (!injected) { try { repoHas = gitRepoHas(require('agent-manager/src/config.js').getConfig().repoRoot); } catch { /* no repo: nothing can be verified, flag nothing */ } }
     const withC = withContract(split.subTasks, split.contract);
     return { ...split, subTasks: annotateUnverifiedNames(withC, split.contract, repoHas) };
+  } catch { return split; }
+}
+
+// List callers and tests of the symbols a piece changes (impact-files.js). Fails open.
+function withImpact(split, injected) {
+  try {
+    if (injected === null) return split;
+    let grep = injected;
+    if (!grep) grep = gitGrep(require('agent-manager/src/config.js').getConfig().repoRoot);
+    return { ...split, subTasks: annotateWithImpact(split.subTasks, { grep }) };
   } catch { return split; }
 }
 
