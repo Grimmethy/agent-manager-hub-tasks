@@ -59,7 +59,7 @@ test('classifyChildStatus maps queue state + mergedAt to a checklist status', ()
   assert.equal(classifyChildStatus({ state: 'review', task: {} }), 'in-progress');
 });
 
-test('sweep reconciles a mixed checklist onto the parent without completing it', () => {
+test('sweep reconciles a mixed checklist onto the parent without completing it', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'parent-1', status: 'coordinating', history: [],
@@ -73,7 +73,7 @@ test('sweep reconciles a mixed checklist onto the parent without completing it',
   write(dir, 'done', { id: 'c-b' }); // done, not merged
   write(dir, 'blocked', { id: 'c-c', blockedReason: 'stuck' });
 
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.deepEqual(summary, { checked: 1, updated: 1, completed: 0, errors: 0, blocked: 1, hubsLabelled: 1, membersRetitled: 3 });
 
   const parent = readParent(dir, 'coordinating', 'parent-1');
@@ -86,7 +86,7 @@ test('sweep reconciles a mixed checklist onto the parent without completing it',
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'done', 'parent-1.json')), false, 'not completed while a child is blocked');
 });
 
-test('stuck detection: a child waiting on a needs-clarification sibling flags the hub, and clears when the sibling recovers', () => {
+test('stuck detection: a child waiting on a needs-clarification sibling flags the hub, and clears when the sibling recovers', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'hub-dep', status: 'coordinating', history: [],
@@ -98,7 +98,7 @@ test('stuck detection: a child waiting on a needs-clarification sibling flags th
   write(dir, 'needs-clarification', { id: 'x-0' });
   write(dir, 'adhoc', { id: 'x-1', dependsOn: ['x-0'] });
 
-  let summary = coordinatorSweep({ pipelineDir: dir });
+  let summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.blocked, 1);
   let hub = readParent(dir, 'coordinating', 'hub-dep');
   assert.ok(hub.coordinatorBlocked);
@@ -106,21 +106,21 @@ test('stuck detection: a child waiting on a needs-clarification sibling flags th
   const evts1 = hub.history.filter((h) => h.stage === 'blocked').length;
 
   // second sweep: same signature -> no new history event, still stays put
-  summary = coordinatorSweep({ pipelineDir: dir });
+  summary = await coordinatorSweep({ pipelineDir: dir });
   hub = readParent(dir, 'coordinating', 'hub-dep');
   assert.equal(hub.history.filter((h) => h.stage === 'blocked').length, evts1, 'idempotent -- no duplicate blocked event');
 
   // x-0 recovers (merged); re-run
   fs.unlinkSync(path.join(dir, 'queue', 'needs-clarification', 'x-0.json'));
   write(dir, 'done', { id: 'x-0', mergedAt: 'x' });
-  summary = coordinatorSweep({ pipelineDir: dir });
+  summary = await coordinatorSweep({ pipelineDir: dir });
   hub = readParent(dir, 'coordinating', 'hub-dep');
   assert.equal(hub.coordinatorBlocked, undefined, 'cleared once the sibling recovered');
   assert.equal(hub.blockedReason, undefined);
   assert.equal(summary.unblocked, 1);
 });
 
-test('stuck detection: escalates (flag + history) after the grace period, still stays in coordinating/', () => {
+test('stuck detection: escalates (flag + history) after the grace period, still stays in coordinating/', async () => {
   const dir = makePipeline();
   const oldSince = new Date(Date.now() - 5 * 86400000).toISOString();
   write(dir, 'coordinating', {
@@ -130,7 +130,7 @@ test('stuck detection: escalates (flag + history) after the grace period, still 
   });
   write(dir, 'needs-clarification', { id: 'y-0' });
 
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.escalated, 1);
   const hub = readParent(dir, 'coordinating', 'hub-esc');
   assert.equal(hub.coordinatorBlocked.escalated, true);
@@ -138,7 +138,7 @@ test('stuck detection: escalates (flag + history) after the grace period, still 
   assert.ok(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'hub-esc.json')), 'stays in coordinating/, not moved');
 });
 
-test('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS=0 disables escalation (flag only)', () => {
+test('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS=0 disables escalation (flag only)', async () => {
   const dir = makePipeline();
   const oldSince = new Date(Date.now() - 30 * 86400000).toISOString();
   write(dir, 'coordinating', {
@@ -149,7 +149,7 @@ test('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS=0 disables escalation (flag 
   write(dir, 'blocked', { id: 'z-0' });
   process.env.AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS = '0';
   try {
-    const summary = coordinatorSweep({ pipelineDir: dir });
+    const summary = await coordinatorSweep({ pipelineDir: dir });
     assert.equal(summary.escalated, undefined);
     assert.equal(readParent(dir, 'coordinating', 'hub-noesc').coordinatorBlocked.escalated, false);
   } finally {
@@ -157,7 +157,7 @@ test('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS=0 disables escalation (flag 
   }
 });
 
-test('sweep moves the parent to done/ once every child is terminal-good (done / merged / gone / abandoned)', () => {
+test('sweep moves the parent to done/ once every child is terminal-good (done / merged / gone / abandoned)', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'parent-2', status: 'coordinating', history: [{ stage: 'coordinating', at: 'x' }],
@@ -175,7 +175,7 @@ test('sweep moves the parent to done/ once every child is terminal-good (done / 
   // d-e is not present anywhere -> 'gone' -- but we only have 4 here; add one:
   // (kept simple -- 4 children, all terminal-good)
 
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.completed, 1);
 
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'parent-2.json')), false);
@@ -186,7 +186,7 @@ test('sweep moves the parent to done/ once every child is terminal-good (done / 
   assert.deepEqual(done.progress, { done: 4, built: 4, total: 4 });
 });
 
-test('non-stacked decompose hub: a `done`-not-merged child does NOT complete the hub; completes once every child is merged', () => {
+test('non-stacked decompose hub: a `done`-not-merged child does NOT complete the hub; completes once every child is merged', async () => {
   const dir = makePipeline();
   const prev = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
   process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE = 'false'; // skip the git commit-trailer reconcile -- test the pure gate
@@ -201,14 +201,14 @@ test('non-stacked decompose hub: a `done`-not-merged child does NOT complete the
     write(dir, 'done', { id: 'm-a', mergedAt: 'x' }); // merged
     write(dir, 'done', { id: 'm-b' });                // done on its own agent/<id> branch, NOT merged
 
-    let summary = coordinatorSweep({ pipelineDir: dir });
+    let summary = await coordinatorSweep({ pipelineDir: dir });
     assert.equal(summary.completed, 0, 'a bare `done` child does not count toward a decomposeHub');
     let parent = readParent(dir, 'coordinating', 'dhub-1');
     assert.deepEqual(parent.progress, { done: 1, built: 2, total: 2 });
     assert.equal(fs.existsSync(path.join(dir, 'queue', 'done', 'dhub-1.json')), false, 'hub stays in coordinating/');
 
     write(dir, 'done', { id: 'm-b', mergedAt: 'y' }); // now actually landed on main
-    summary = coordinatorSweep({ pipelineDir: dir });
+    summary = await coordinatorSweep({ pipelineDir: dir });
     assert.equal(summary.completed, 1);
     assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'dhub-1.json')), false);
     parent = JSON.parse(fs.readFileSync(path.join(dir, 'queue', 'done', 'dhub-1.json'), 'utf8'));
@@ -219,7 +219,7 @@ test('non-stacked decompose hub: a `done`-not-merged child does NOT complete the
   }
 });
 
-test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: a done mechanical child is auto-merged and the hub completes', () => {
+test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: a done mechanical child is auto-merged and the hub completes', async () => {
   const dir = makePipeline();
   const prevA = process.env.AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES;
   const prevR = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
@@ -236,7 +236,7 @@ test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: a done mechanical child
     const seen = [];
     let handedDir = null;
     const runAutoMerge = (a) => { seen.push(a.childId); handedDir = a.pipelineDir; return { merged: true, mergeCommit: 'abc123def456' }; };
-    const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
 
     assert.deepEqual(seen, ['am-x'], 'auto-merge was attempted for the mechanical child');
     assert.equal(handedDir, dir, 'the sweep hands the pipelineDir through so the auto-merge can record its branch removal');
@@ -254,7 +254,7 @@ test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: a done mechanical child
   }
 });
 
-test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: an unmergeable mechanical child blocks the hub, persists autoMergeBlocked, is not re-attempted', () => {
+test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: an unmergeable mechanical child blocks the hub, persists autoMergeBlocked, is not re-attempted', async () => {
   const dir = makePipeline();
   const prevA = process.env.AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES;
   const prevR = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
@@ -271,7 +271,7 @@ test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: an unmergeable mechanic
     let n = 0;
     const runAutoMerge = () => { n += 1; return { merged: false, reason: 'conflict', conflictFiles: ['python/dashboard/templates/index.html'] }; };
 
-    let summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    let summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
     assert.equal(n, 1);
     assert.equal(summary.completed, 0);
     let parent = readParent(dir, 'coordinating', 'dhub-cf');
@@ -283,7 +283,7 @@ test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: an unmergeable mechanic
     assert.ok(!child.mergedAt);
 
     // Next tick: the persisted marker (and the per-process give-up set) stop a re-attempt.
-    summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
     assert.equal(n, 1, 'the expensive auto-merge + gate is not re-run while blocked');
     assert.equal(summary.completed, 0);
     assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'dhub-cf.json')), true, 'hub stays in coordinating/');
@@ -294,7 +294,7 @@ test('non-stacked decompose hub + AUTO_MERGE_MOVES=true: an unmergeable mechanic
   }
 });
 
-test('auto-merge is OFF by default (no ungated-main-push opt-in): a done mechanical child is NOT auto-merged, it waits for a human merge', () => {
+test('auto-merge is OFF by default (no ungated-main-push opt-in): a done mechanical child is NOT auto-merged, it waits for a human merge', async () => {
   const dir = makePipeline();
   const prevA = process.env.AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES;
   const prevR = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
@@ -308,7 +308,7 @@ test('auto-merge is OFF by default (no ungated-main-push opt-in): a done mechani
     write(dir, 'done', { id: 'def-x', promptContext: { deterministicApply: 'script-extract', sourceFile: 'a/index.html' } });
     let called = false;
     const runAutoMerge = () => { called = true; return { merged: true, mergeCommit: 'aaa111bbb222' }; };
-    const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
     assert.equal(called, false, 'the coordinator never merges to main by itself by default');
     assert.equal(summary.completed, 0, 'the hub stays open until a human merges the child');
   } finally {
@@ -317,7 +317,7 @@ test('auto-merge is OFF by default (no ungated-main-push opt-in): a done mechani
     if (prevR === undefined) delete process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE; else process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE = prevR;
   }
 });
-test('auto-merge runs only with the explicit AGENT_MANAGER_ALLOW_UNGATED_MAIN_PUSH=true opt-in', () => {
+test('auto-merge runs only with the explicit AGENT_MANAGER_ALLOW_UNGATED_MAIN_PUSH=true opt-in', async () => {
   const dir = makePipeline();
   const prevA = process.env.AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES;
   const prevR = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
@@ -332,7 +332,7 @@ test('auto-merge runs only with the explicit AGENT_MANAGER_ALLOW_UNGATED_MAIN_PU
     write(dir, 'done', { id: 'def-x', promptContext: { deterministicApply: 'script-extract', sourceFile: 'a/index.html' } });
     let called = false;
     const runAutoMerge = () => { called = true; return { merged: true, mergeCommit: 'aaa111bbb222' }; };
-    const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
     assert.equal(called, true, 'auto-merge runs when explicitly opted in');
     assert.equal(summary.completed, 1);
   } finally {
@@ -343,7 +343,7 @@ test('auto-merge runs only with the explicit AGENT_MANAGER_ALLOW_UNGATED_MAIN_PU
   }
 });
 
-test('AUTO_MERGE_MOVES=false is the kill switch: a done mechanical child is never auto-merged', () => {
+test('AUTO_MERGE_MOVES=false is the kill switch: a done mechanical child is never auto-merged', async () => {
   const dir = makePipeline();
   const prevA = process.env.AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES;
   const prevR = process.env.AGENT_MANAGER_COORDINATOR_RECONCILE_CHILD_MERGE;
@@ -357,7 +357,7 @@ test('AUTO_MERGE_MOVES=false is the kill switch: a done mechanical child is neve
     write(dir, 'done', { id: 'off-x', promptContext: { deterministicApply: 'script-extract', sourceFile: 'a/index.html' } });
     let called = false;
     const runAutoMerge = () => { called = true; return { merged: true }; };
-    const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
+    const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge });
     assert.equal(called, false, 'AGENT_MANAGER_COORDINATOR_AUTO_MERGE_MOVES=false disables it');
     assert.equal(summary.completed, 0);
   } finally {
@@ -367,7 +367,7 @@ test('AUTO_MERGE_MOVES=false is the kill switch: a done mechanical child is neve
   }
 });
 
-test('completing a hub stamps mergedAt so a dependent sibling can clear isDependencySatisfied', () => {
+test('completing a hub stamps mergedAt so a dependent sibling can clear isDependencySatisfied', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'hub-1', status: 'coordinating', history: [],
@@ -375,17 +375,17 @@ test('completing a hub stamps mergedAt so a dependent sibling can clear isDepend
   });
   write(dir, 'done', { id: 'h-a', mergedAt: 'x' });
 
-  coordinatorSweep({ pipelineDir: dir });
+  await coordinatorSweep({ pipelineDir: dir });
 
   const done = JSON.parse(fs.readFileSync(path.join(dir, 'queue', 'done', 'hub-1.json'), 'utf8'));
   assert.ok(done.mergedAt, 'hub gets a mergedAt on completion');
   assert.equal(done.mergedAtSource, 'coordinator-hub-all-subtasks-done');
 });
 
-test('a hub with no sub-tasks is also stamped mergedAt when completed out', () => {
+test('a hub with no sub-tasks is also stamped mergedAt when completed out', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', { id: 'hub-empty', status: 'coordinating', history: [], subTasks: [] });
-  coordinatorSweep({ pipelineDir: dir });
+  await coordinatorSweep({ pipelineDir: dir });
   const done = JSON.parse(fs.readFileSync(path.join(dir, 'queue', 'done', 'hub-empty.json'), 'utf8'));
   assert.ok(done.mergedAt);
   // No coordinatorBlocked marker -- this is the legitimate "orphaned, cleaned up
@@ -399,13 +399,13 @@ test('a hub with no sub-tasks is also stamped mergedAt when completed out', () =
 // creation (validatePlan() found a hard problem, zero children were EVER attempted) must
 // not read as `merged` just because it also has zero sub-tasks. Confirmed live: 33 real
 // `Decompose <file> -- plan needs revision` records in queue/done/ carried this exact bug.
-test('a hub rejected at creation (coordinatorBlocked, zero sub-tasks ever filed) is stamped noop, not merged, and filed straight into _archived_no_action', () => {
+test('a hub rejected at creation (coordinatorBlocked, zero sub-tasks ever filed) is stamped noop, not merged, and filed straight into _archived_no_action', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'hub-rejected', status: 'coordinating', history: [], subTasks: [],
     coordinatorBlocked: { signature: 'plan-invalid:src/x.js: some hard problem', since: new Date().toISOString(), children: [], escalated: false },
   });
-  coordinatorSweep({ pipelineDir: dir });
+  await coordinatorSweep({ pipelineDir: dir });
   // Filed straight into _archived_no_action/, not done/'s top level -- "fold it into the
   // watchdog sweep" (2026-09-14): a rejected-at-creation hub has nothing for a human to
   // review or a dependent to wait on, so it shouldn't sit in done/'s top level for up to
@@ -434,7 +434,7 @@ test('a hub rejected at creation (coordinatorBlocked, zero sub-tasks ever filed)
 // Confirmed live: 6 real hubs sat in coordinating/ for hours this way. The fix: unlink
 // the stray duplicate too (the already-archived copy already fully describes this exact
 // rejected-at-creation failure -- no information is lost).
-test('a duplicate rejected-at-creation hub under an ALREADY-archived id is cleaned up, not stranded in coordinating/ forever', () => {
+test('a duplicate rejected-at-creation hub under an ALREADY-archived id is cleaned up, not stranded in coordinating/ forever', async () => {
   const dir = makePipeline();
   const archivedDir = path.join(dir, 'queue', 'done', '_archived_no_action');
   fs.mkdirSync(archivedDir, { recursive: true });
@@ -449,7 +449,7 @@ test('a duplicate rejected-at-creation hub under an ALREADY-archived id is clean
     id: 'hub-dup', status: 'coordinating', history: [], subTasks: [],
     coordinatorBlocked: { signature: 'plan-invalid:src/x.js: some hard problem', since: new Date().toISOString(), children: [], escalated: false },
   });
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'hub-dup.json')), false, 'the duplicate must not be left stranded in coordinating/');
   // The original archived copy is untouched -- still the FIRST occurrence's content,
   // never overwritten by the duplicate.
@@ -459,19 +459,19 @@ test('a duplicate rejected-at-creation hub under an ALREADY-archived id is clean
 
   // And the fix is durable across ticks: a THIRD sweep with nothing new to do must not
   // re-discover a duplicate that no longer exists.
-  const second = coordinatorSweep({ pipelineDir: dir });
+  const second = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(second.checked, 0);
 });
 
-test('sweep on a missing coordinating/ dir is a clean no-op', () => {
+test('sweep on a missing coordinating/ dir is a clean no-op', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'coordinator-sweep-empty-'));
-  assert.deepEqual(coordinatorSweep({ pipelineDir: dir }), { checked: 0, updated: 0, completed: 0, errors: 0 });
+  assert.deepEqual(await coordinatorSweep({ pipelineDir: dir }), { checked: 0, updated: 0, completed: 0, errors: 0 });
 });
 
-test('sweep skips a malformed parent file, counting it as an error, not a crash', () => {
+test('sweep skips a malformed parent file, counting it as an error, not a crash', async () => {
   const dir = makePipeline();
   fs.writeFileSync(path.join(dir, 'queue', 'coordinating', 'bad.json'), '{not json');
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.errors, 1);
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'bad.json')), true);
 });
@@ -493,10 +493,10 @@ function stackedHub(dir, extra = {}) {
   write(dir, 'done', { id: 'adhoc-decompose-x-99-wiring', stacked: { branch: 'agent/decompose-x' } });
 }
 
-test('stacked hub: all children done + gate passes -> hub completes and is stamped merged', () => {
+test('stacked hub: all children done + gate passes -> hub completes and is stamped merged', async () => {
   const dir = makePipeline();
   stackedHub(dir);
-  const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate: () => ({ ok: true, checks: [{ name: 'import', status: 'pass' }] }) });
+  const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate: () => ({ ok: true, checks: [{ name: 'import', status: 'pass' }] }) });
   assert.equal(summary.completed, 1);
   assert.equal(summary.gatePassed, 1);
   const parent = readParent(dir, 'done', 'file-decompose-hub-x');
@@ -505,10 +505,10 @@ test('stacked hub: all children done + gate passes -> hub completes and is stamp
   assert.equal(parent.terminalDisposition, 'merged');
 });
 
-test('stacked hub: gate fails -> hub stays in coordinating/ with a blockedReason naming the check', () => {
+test('stacked hub: gate fails -> hub stays in coordinating/ with a blockedReason naming the check', async () => {
   const dir = makePipeline();
   stackedHub(dir);
-  const summary = coordinatorSweep({
+  const summary = await coordinatorSweep({
     pipelineDir: dir, repoRoot: null,
     runGate: () => ({ ok: false, checks: [{ name: 'import', status: 'fail', detail: 'circular import' }] }),
   });
@@ -520,24 +520,24 @@ test('stacked hub: gate fails -> hub stays in coordinating/ with a blockedReason
   assert.match(parent.blockedReason, /integration gate failed.*import -- circular import/);
 });
 
-test('stacked hub: gate is not re-run once it has a verdict (cheap every-tick sweep)', () => {
+test('stacked hub: gate is not re-run once it has a verdict (cheap every-tick sweep)', async () => {
   const dir = makePipeline();
   stackedHub(dir);
   let calls = 0;
   const runGate = () => { calls += 1; return { ok: true, checks: [] }; };
-  coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate });
   // hub moved to done/ on the first pass; a second sweep sees nothing to do.
-  coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate });
   assert.equal(calls, 1);
 });
 
-test('stacked hub: a re-queued wiring child re-arms the gate', () => {
+test('stacked hub: a re-queued wiring child re-arms the gate', async () => {
   const dir = makePipeline();
   stackedHub(dir, { integrationGate: { status: 'failed', checks: [] }, blockedReason: 'old', coordinatorBlocked: { since: 'x' } });
   // wiring child pulled back to adhoc/ for a retry
   fs.unlinkSync(path.join(dir, 'queue', 'done', 'adhoc-decompose-x-99-wiring.json'));
   write(dir, 'adhoc', { id: 'adhoc-decompose-x-99-wiring', stacked: { branch: 'agent/decompose-x' } });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate: () => ({ ok: true, checks: [] }) });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate: () => ({ ok: true, checks: [] }) });
   const parent = readParent(dir, 'coordinating', 'file-decompose-hub-x');
   assert.equal(parent.integrationGate.status, 'pending');
   assert.equal(parent.blockedReason, undefined);
@@ -561,11 +561,11 @@ function wiringHub(dir, extra = {}) {
   write(dir, 'done', { id: 'adhoc-decompose-w-02-rp', stacked: { branch: 'agent/decompose-w' } });
 }
 
-test('wiring hub: all move children done -> runWiring fires, clears wiringPending, gate deferred to next tick', () => {
+test('wiring hub: all move children done -> runWiring fires, clears wiringPending, gate deferred to next tick', async () => {
   const dir = makePipeline();
   wiringHub(dir);
   let gateCalls = 0;
-  const summary = coordinatorSweep({
+  const summary = await coordinatorSweep({
     pipelineDir: dir, repoRoot: '/repo',
     runWiring: () => ({ ok: true, registered: 1, sha: 'deadbeef00' }),
     runGate: () => { gateCalls += 1; return { ok: true, checks: [] }; },
@@ -578,10 +578,10 @@ test('wiring hub: all move children done -> runWiring fires, clears wiringPendin
   assert.match(JSON.stringify(parent.history), /wired 1 blueprint/);
 });
 
-test('wiring hub: next tick runs the gate against the wired branch and completes the hub', () => {
+test('wiring hub: next tick runs the gate against the wired branch and completes the hub', async () => {
   const dir = makePipeline();
   wiringHub(dir, { wiringPending: false });
-  const summary = coordinatorSweep({
+  const summary = await coordinatorSweep({
     pipelineDir: dir, repoRoot: '/repo',
     runGate: () => ({ ok: true, checks: [{ name: 'import', status: 'pass' }] }),
   });
@@ -589,10 +589,10 @@ test('wiring hub: next tick runs the gate against the wired branch and completes
   assert.equal(readParent(dir, 'done', 'file-decompose-hub-w').integrationGate.status, 'passed');
 });
 
-test('wiring hub: a wiring failure blocks the hub with a blockedReason + coordinatorBlocked', () => {
+test('wiring hub: a wiring failure blocks the hub with a blockedReason + coordinatorBlocked', async () => {
   const dir = makePipeline();
   wiringHub(dir);
-  const summary = coordinatorSweep({
+  const summary = await coordinatorSweep({
     pipelineDir: dir, repoRoot: '/repo',
     runWiring: () => ({ ok: false, detail: 'no __main__ guard and EOF splice rejected' }),
   });
@@ -604,13 +604,13 @@ test('wiring hub: a wiring failure blocks the hub with a blockedReason + coordin
   assert.equal(parent.coordinatorBlocked.signature, 'blueprint-wiring:failed');
 });
 
-test('wiring hub: not all children done -> wiring does not fire', () => {
+test('wiring hub: not all children done -> wiring does not fire', async () => {
   const dir = makePipeline();
   wiringHub(dir);
   fs.unlinkSync(path.join(dir, 'queue', 'done', 'adhoc-decompose-w-02-rp.json'));
   write(dir, 'adhoc', { id: 'adhoc-decompose-w-02-rp', stacked: { branch: 'agent/decompose-w' } });
   let wiringCalls = 0;
-  coordinatorSweep({ pipelineDir: dir, repoRoot: '/repo', runWiring: () => { wiringCalls += 1; return { ok: true }; } });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: '/repo', runWiring: () => { wiringCalls += 1; return { ok: true }; } });
   assert.equal(wiringCalls, 0);
 });
 
@@ -622,7 +622,7 @@ test('wiring hub: not all children done -> wiring does not fire', () => {
 // with e.g. a legitimately noop-resolved child ("already satisfied, no code change
 // needed" -- a real, common, correct outcome) could never auto-complete again. Caught
 // live on a real hub whose two stuck sub-tasks both correctly resolved to noop.
-test('a plain (non-decomposeHub) coordinating hub completes once every child reaches ANY real terminalDisposition, not just merged/done/abandoned', () => {
+test('a plain (non-decomposeHub) coordinating hub completes once every child reaches ANY real terminalDisposition, not just merged/done/abandoned', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'ordinary-hub', status: 'coordinating', history: [{ stage: 'coordinating', at: 'x' }],
@@ -638,14 +638,14 @@ test('a plain (non-decomposeHub) coordinating hub completes once every child rea
   write(dir, 'done', { id: 'c-filed', terminalDisposition: 'filed' });
   write(dir, 'done', { id: 'c-merged', mergedAt: 'x' });
 
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.completed, 1, 'every child reached a real terminal disposition -- the hub must complete');
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'ordinary-hub.json')), false);
   const parent = readParent(dir, 'done', 'ordinary-hub');
   assert.deepEqual(parent.progress, { done: 4, built: 4, total: 4 });
 });
 
-test('a plain coordinating hub does NOT complete while a child is still pending-merge (excluded from TERMINAL_GOOD on purpose)', () => {
+test('a plain coordinating hub does NOT complete while a child is still pending-merge (excluded from TERMINAL_GOOD on purpose)', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'pm-hub', status: 'coordinating', history: [{ stage: 'coordinating', at: 'x' }],
@@ -653,7 +653,7 @@ test('a plain coordinating hub does NOT complete while a child is still pending-
   });
   write(dir, 'done', { id: 'c-pm', terminalDisposition: 'pending-merge' });
 
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.completed, 0, 'pending-merge must never count as done -- the child has not actually landed yet');
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'pm-hub.json')), true);
 });
@@ -709,7 +709,7 @@ test('sanitizeTaskDisposition retains merge fields for a legitimately merged tas
 });
 
 // The checklist said `in-progress` for a piece that was really just held for an earlier sibling's merge, so a frozen hub looked busy.
-test('sweep marks a piece that is only waiting for an earlier sibling with heldFor, and clears it once released', () => {
+test('sweep marks a piece that is only waiting for an earlier sibling with heldFor, and clears it once released', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', {
     id: 'hub-h', status: 'coordinating', history: [],
@@ -718,7 +718,7 @@ test('sweep marks a piece that is only waiting for an earlier sibling with heldF
   // h-1 finished but NOT merged, not stacked -> the sibling net holds h-2
   write(dir, 'done', { id: 'h-1', terminalDisposition: 'pending-merge' });
   write(dir, 'adhoc', { id: 'h-2', promptContext: { decomposedFrom: 'hub-h' } });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   let hub = readParent(dir, 'coordinating', 'hub-h');
   assert.equal(hub.subTasks[1].status, 'in-progress');
   assert.deepEqual(hub.subTasks[1].heldFor, { id: 'h-1', status: 'pending-merge' });
@@ -726,13 +726,13 @@ test('sweep marks a piece that is only waiting for an earlier sibling with heldF
 
   // h-1 lands -> the next tick releases h-2 and the marker goes away
   write(dir, 'done', { id: 'h-1', terminalDisposition: 'merged', mergedAt: '2026-09-20T00:00:00Z' });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   hub = readParent(dir, 'coordinating', 'hub-h');
   assert.equal(hub.subTasks[1].heldFor, undefined);
 });
 
-test('sweep does NOT mark a stacked piece as held when its earlier sibling is pending-merge on the same branch', () => {
+test('sweep does NOT mark a stacked piece as held when its earlier sibling is pending-merge on the same branch', async () => {
   const dir = makePipeline();
   const branch = 'agent/decompose-hub-s';
   write(dir, 'coordinating', {
@@ -741,8 +741,8 @@ test('sweep does NOT mark a stacked piece as held when its earlier sibling is pe
   });
   write(dir, 'done', { id: 's-1', terminalDisposition: 'pending-merge', stacked: { branch, seq: 1, total: 2 } });
   write(dir, 'adhoc', { id: 's-2', promptContext: { decomposedFrom: 'hub-s' }, stacked: { branch, seq: 2, total: 2 } });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   const hub = readParent(dir, 'coordinating', 'hub-s');
   assert.equal(hub.subTasks[1].status, 'in-progress');
   assert.equal(hub.subTasks[1].heldFor, undefined);
@@ -764,13 +764,13 @@ test('childPhase: merged / built / open -- and it agrees with TERMINAL_GOOD for 
   assert.equal(childPhase('noop', true), 'open');
 });
 
-test('a hub of built-but-unmerged pieces: progress.built counts them, progress.done does not, and the hub does NOT complete', () => {
+test('a hub of built-but-unmerged pieces: progress.built counts them, progress.done does not, and the hub does NOT complete', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', { id: 'hub-b', status: 'coordinating', history: [], subTasks: [{ id: 'b1', title: 'one', status: 'pending' }, { id: 'b2', title: 'two', status: 'pending' }, { id: 'b3', title: 'three', status: 'pending' }] });
   write(dir, 'done', { id: 'b1', terminalDisposition: 'pending-merge' });
   write(dir, 'adhoc', { id: 'b2' });
   write(dir, 'done', { id: 'b3', terminalDisposition: 'merged', mergedAt: '2026-09-20T00:00:00Z' });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   let hub = readParent(dir, 'coordinating', 'hub-b');
   assert.deepEqual(hub.progress, { done: 1, built: 2, total: 3 });
   assert.deepEqual(hub.subTasks.map((s) => s.phase), ['built', 'open', 'merged']);
@@ -779,19 +779,19 @@ test('a hub of built-but-unmerged pieces: progress.built counts them, progress.d
   write(dir, 'done', { id: 'b2', terminalDisposition: 'pending-merge' });
   fs.unlinkSync(path.join(dir, 'queue', 'adhoc', 'b2.json'));
   write(dir, 'done', { id: 'b3', terminalDisposition: 'pending-merge' });
-  const s = coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  const s = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   hub = readParent(dir, 'coordinating', 'hub-b');
   assert.deepEqual(hub.progress, { done: 0, built: 3, total: 3 });
   assert.equal(s.completed, 0);
   assert.equal(fs.existsSync(path.join(dir, 'queue', 'coordinating', 'hub-b.json')), true, 'still coordinating until the pieces are really merged');
 });
 
-test('a strict-merge (non-stacked file-decompose) hub: a merged child is done, a bare done child is built', () => {
+test('a strict-merge (non-stacked file-decompose) hub: a merged child is done, a bare done child is built', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', { id: 'hub-s', status: 'coordinating', decomposeHub: true, history: [], subTasks: [{ id: 's1', status: 'pending' }, { id: 's2', status: 'pending' }] });
   write(dir, 'done', { id: 's1', mergedAt: '2026-09-20T00:00:00Z', terminalDisposition: 'merged' });
   write(dir, 'done', { id: 's2' });
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge: () => ({ merged: false }) });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir, runAutoMerge: () => ({ merged: false }) });
   const hub = readParent(dir, 'coordinating', 'hub-s');
   assert.equal(hub.progress.total, 2);
   assert.equal(hub.progress.built, 2);
@@ -842,6 +842,13 @@ function withEnv(name, value, fn) {
   try { return fn(); } finally { if (old === undefined) delete process.env[name]; else process.env[name] = old; }
 }
 
+// Async twin of withEnv: the variable must stay set until the awaited callback has finished (a plain withEnv would restore it as soon as the promise is returned).
+async function withEnvAsync(name, value, fn) {
+  const old = process.env[name];
+  if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  try { return await fn(); } finally { if (old === undefined) delete process.env[name]; else process.env[name] = old; }
+}
+
 test('stuckEscalateMs: no argument and a non-premium hub keep the days value; a premium hub uses the hours value', () => {
   assert.equal(stuckEscalateMs(), 3 * 86400000);
   assert.equal(stuckEscalateMs({ premiumPriority: false }), 3 * 86400000);
@@ -853,12 +860,12 @@ test('stuckEscalateMs: no argument and a non-premium hub keep the days value; a 
   withEnv('AGENT_MANAGER_COORDINATOR_STUCK_ESCALATE_DAYS', '1', () => assert.equal(stuckEscalateMs({ premiumPriority: true }), 6 * 3600000, 'the days setting does not leak into premium hubs'));
 });
 
-test('a premium hub stuck for 7 hours escalates (history says hours); a non-premium hub stuck for 7 hours does not', () => {
+test('a premium hub stuck for 7 hours escalates (history says hours); a non-premium hub stuck for 7 hours does not', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', stuckHub('hub-prem', 7, { premiumPriority: true }));
   write(dir, 'coordinating', stuckHub('hub-plain', 7));
   write(dir, 'blocked', { id: 'w-0' });
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.escalated, 1);
   const prem = readParent(dir, 'coordinating', 'hub-prem');
   assert.equal(prem.coordinatorBlocked.escalated, true);
@@ -866,21 +873,45 @@ test('a premium hub stuck for 7 hours escalates (history says hours); a non-prem
   assert.equal(readParent(dir, 'coordinating', 'hub-plain').coordinatorBlocked.escalated, false);
 });
 
-test('a premium hub stuck for 1 hour does not escalate, and the hours setting 0 disables it', () => {
+test('a premium hub stuck for 1 hour does not escalate, and the hours setting 0 disables it', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', stuckHub('hub-young', 1, { premiumPriority: true }));
   write(dir, 'blocked', { id: 'w-0' });
-  assert.equal(coordinatorSweep({ pipelineDir: dir }).escalated, undefined);
+  assert.equal((await coordinatorSweep({ pipelineDir: dir })).escalated, undefined);
   const dir2 = makePipeline();
   write(dir2, 'coordinating', stuckHub('hub-zero', 30, { premiumPriority: true }));
   write(dir2, 'blocked', { id: 'w-0' });
-  withEnv('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '0', () => assert.equal(coordinatorSweep({ pipelineDir: dir2 }).escalated, undefined));
+  await withEnvAsync('AGENT_MANAGER_COORDINATOR_PREMIUM_STUCK_ESCALATE_HOURS', '0', async () => assert.equal((await coordinatorSweep({ pipelineDir: dir2 })).escalated, undefined));
 });
 
-test('the escalation history line still reads days once a hub has been stuck for more than a day', () => {
+test('the escalation history line still reads days once a hub has been stuck for more than a day', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', stuckHub('hub-old', 30, { premiumPriority: true }));
   write(dir, 'blocked', { id: 'w-0' });
-  coordinatorSweep({ pipelineDir: dir });
+  await coordinatorSweep({ pipelineDir: dir });
   assert.match(readParent(dir, 'coordinating', 'hub-old').history.at(-1).detail, /stuck 1d -- needs a human/);
+});
+
+// coordinatorSweep is async, so the CLI (what the queue watcher runs every tick) must await it: an un-awaited call prints `{}` (a stringified Promise)
+// and the watcher logs an empty summary while the sweep runs unobserved.
+test('the CLI awaits the async sweep and prints its summary object', () => {
+  const { execFileSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-cli-'));
+  fs.mkdirSync(path.join(dir, 'queue', 'coordinating'), { recursive: true });
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'coordinator-sweep.js')], {
+    encoding: 'utf8',
+    env: { ...process.env, AGENT_MANAGER_REPO_ROOT: dir, AGENT_MANAGER_PIPELINE_DIR: dir, AGENT_MANAGER_DOMAINS_PATH: path.join(dir, 'task-domains.json') },
+  });
+  assert.deepEqual(JSON.parse(out), { checked: 0, updated: 0, completed: 0, errors: 0 });
+});
+
+test('coordinatorSweep reads the coordinating files concurrently but still counts an unreadable or malformed one as an error and moves on', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'coord-bad-'));
+  const coord = path.join(dir, 'queue', 'coordinating');
+  fs.mkdirSync(coord, { recursive: true });
+  fs.writeFileSync(path.join(coord, 'HUB9999-bad.json'), '{not json');
+  fs.mkdirSync(path.join(coord, 'HUB9998-dir.json')); // a directory named like a task file: readFile fails (EISDIR)
+  const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  assert.equal(summary.errors, 2);
+  assert.equal(summary.updated, 0);
 });

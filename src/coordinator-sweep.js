@@ -337,7 +337,7 @@ function runStackedWiring(parent, repoRoot) {
   }
 }
 
-function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, runWiring = runStackedWiring, runAutoMerge = autoMergeVerifiedMoveChild } = {}) {
+async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, runWiring = runStackedWiring, runAutoMerge = autoMergeVerifiedMoveChild } = {}) {
   const coordDir = path.join(pipelineDir, 'queue', 'coordinating');
   const doneDir = path.join(pipelineDir, 'queue', 'done');
   let resolvedRepoRoot = repoRoot;
@@ -357,11 +357,19 @@ function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, run
     return summary;
   }
 
-  for (const name of names) {
+  const readResults = await Promise.allSettled(
+    names.map((name) => fs.promises.readFile(path.join(coordDir, name), 'utf8'))
+  );
+  for (let _si = 0; _si < names.length; _si++) {
+    const name = names[_si];
     const file = path.join(coordDir, name);
     let parent;
+    if (readResults[_si].status !== 'fulfilled') {
+      summary.errors += 1;
+      continue; // a malformed coordinating file is not this sweep's problem to fix
+    }
     try {
-      parent = JSON.parse(fs.readFileSync(file, 'utf8'));
+      parent = JSON.parse(readResults[_si].value);
     } catch {
       summary.errors += 1;
       continue; // a malformed coordinating file is not this sweep's problem to fix
@@ -653,5 +661,8 @@ module.exports = { coordinatorSweep, stuckEscalateMs, classifyChildStatus, child
 
 if (require.main === module) {
   const { pipelineDir, repoRoot } = getConfig();
-  process.stdout.write(JSON.stringify(coordinatorSweep({ pipelineDir, repoRoot })));
+  // coordinatorSweep is async (it reads the coordinating/ files concurrently): the CLI must await it, or this would print `{}` (a Promise).
+  coordinatorSweep({ pipelineDir, repoRoot })
+    .then((summary) => process.stdout.write(JSON.stringify(summary)))
+    .catch((e) => { console.error(e); process.exit(1); });
 }

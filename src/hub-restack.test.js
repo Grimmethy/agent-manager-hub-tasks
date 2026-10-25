@@ -36,13 +36,13 @@ function mixedHub(dir) {
   put(dir, 'adhoc', child('p2', { stacked: { branch: B, seq: 2, total: 2 }, dependsOn: ['p0'] }));
 }
 
-test('the live nested-hub shape: the independent piece and the wiring piece are put on the chain, in hub order, and nothing waits on a merge any more', () => {
+test('the live nested-hub shape: the independent piece and the wiring piece are put on the chain, in hub order, and nothing waits on a merge any more', async () => {
   const dir = makePipeline();
   mixedHub(dir);
   // before: the independent piece is held behind piece 0's unmerged branch
   assert.equal(hubHasUnmergedEarlierSibling(dir, read(dir, 'adhoc', 'p1'), { subTasks: [{ id: 'p0', status: 'pending-merge' }, { id: 'p1', status: 'in-progress' }, { id: 'p2', status: 'in-progress' }], id: 'hub-n' }).blocked, true);
 
-  const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   assert.equal(summary.restacked, 2);
 
   const p1 = read(dir, 'adhoc', 'p1');
@@ -61,12 +61,12 @@ test('the live nested-hub shape: the independent piece and the wiring piece are 
   assert.equal(hub.subTasks[1].heldFor, undefined);
 });
 
-test('idempotent: a second sweep changes nothing', () => {
+test('idempotent: a second sweep changes nothing', async () => {
   const dir = makePipeline();
   mixedHub(dir);
-  coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   const before = fs.readFileSync(path.join(dir, 'queue', 'adhoc', 'p1.json'), 'utf8');
-  const s2 = coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
+  const s2 = await coordinatorSweep({ pipelineDir: dir, repoRoot: dir });
   assert.equal(s2.restacked, undefined);
   assert.equal(fs.readFileSync(path.join(dir, 'queue', 'adhoc', 'p1.json'), 'utf8'), before);
 });
@@ -122,12 +122,12 @@ test('keeps a dependsOn that points OUTSIDE the hub, and skips a missing predece
   assert.deepEqual(read(dir, 'adhoc', 'p2').dependsOn, ['some-outside-task', 'p0']);
 });
 
-test('kill switch AGENT_MANAGER_HUB_RESTACK=false', () => {
+test('kill switch AGENT_MANAGER_HUB_RESTACK=false', async () => {
   const dir = makePipeline();
   mixedHub(dir);
   process.env.AGENT_MANAGER_HUB_RESTACK = 'false';
   try {
-    assert.equal(coordinatorSweep({ pipelineDir: dir, repoRoot: dir }).restacked, undefined);
+    assert.equal((await coordinatorSweep({ pipelineDir: dir, repoRoot: dir })).restacked, undefined);
     assert.equal(read(dir, 'adhoc', 'p1').stacked, undefined);
   } finally { delete process.env.AGENT_MANAGER_HUB_RESTACK; }
 });
