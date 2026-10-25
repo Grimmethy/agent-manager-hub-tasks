@@ -79,7 +79,7 @@ test('renameHub refuses safely: unknown hub, no label yet, already renamed, targ
   assert.match(renameHub(dir, 'clash').reason, /already exists/);
 });
 
-test('repairStaleHubRefs / coordinatorSweep heal the deferred member once it is idle (and never before)', () => {
+test('repairStaleHubRefs / coordinatorSweep heal the deferred member once it is idle (and never before)', async () => {
   const dir = fixture();
   renameHub(dir, 'nested');
   const hub = read(dir, 'coordinating', 'HUB0002');
@@ -88,8 +88,8 @@ test('repairStaleHubRefs / coordinatorSweep heal the deferred member once it is 
   assert.equal(repairStaleHubRefs(hub, recById), 0, 'n2 is still drafting');
   // the worker finishes: the record settles in done/
   fs.renameSync(path.join(dir, 'queue', 'drafting', 'worker-3090', 'n2.json'), path.join(dir, 'queue', 'done', 'n2.json'));
-  const summary = coordinatorSweep({ pipelineDir: dir, repoRoot: null });
+  const summary = await coordinatorSweep({ pipelineDir: dir, repoRoot: null });
   assert.equal(summary.staleHubRefsRepaired, 1);
   assert.equal(read(dir, 'done', 'n2').promptContext.decomposedFrom, 'HUB0002');
-  assert.equal(coordinatorSweep({ pipelineDir: dir, repoRoot: null }).staleHubRefsRepaired, undefined, 'idempotent');
+  assert.equal((await coordinatorSweep({ pipelineDir: dir, repoRoot: null })).staleHubRefsRepaired, undefined, 'idempotent');
 });

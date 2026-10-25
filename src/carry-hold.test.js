@@ -58,21 +58,21 @@ test('applyCarryHold: the marker clears itself once the record is back in a queu
   assert.equal(st.carriedBy, undefined);
 });
 
-test('sweep: a record-less piece without a marker is gone, so the hub completes (unchanged behaviour)', () => {
+test('sweep: a record-less piece without a marker is gone, so the hub completes (unchanged behaviour)', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', hubWith('hub-a', [{ id: 'a-1', title: 'one', status: 'pending' }]));
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.completed, 1);
 });
 
-test('sweep: a marked record-less piece reads carried, stays open and keeps the hub from completing', () => {
+test('sweep: a marked record-less piece reads carried, stays open and keeps the hub from completing', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', hubWith('hub-b', [
     { id: 'b-1', title: 'one', status: 'pending', carriedBy: { who: 'op', at: new Date().toISOString() } },
     { id: 'b-2', title: 'two', status: 'pending' },
   ]));
   write(dir, 'adhoc', { id: 'b-2', dependsOn: ['b-1'] });
-  const summary = coordinatorSweep({ pipelineDir: dir });
+  const summary = await coordinatorSweep({ pipelineDir: dir });
   assert.equal(summary.completed, 0);
   const hub = readHub(dir, 'hub-b');
   assert.deepEqual(hub.subTasks.map((s) => s.status), ['carried', 'in-progress']);
@@ -80,7 +80,7 @@ test('sweep: a marked record-less piece reads carried, stays open and keeps the 
   assert.ok(hub.subTasks[0].carriedBy, 'the marker survives the sweep rewrite');
 });
 
-test('sweep: once the carried record is placed back the status follows the record and the marker is gone', () => {
+test('sweep: once the carried record is placed back the status follows the record and the marker is gone', async () => {
   const dir = makePipeline();
   write(dir, 'coordinating', hubWith('hub-c', [
     { id: 'c-1', title: 'one', status: 'carried', carriedBy: { who: 'op', at: new Date().toISOString() } },
@@ -88,7 +88,7 @@ test('sweep: once the carried record is placed back the status follows the recor
   ]));
   write(dir, 'adhoc', { id: 'c-2' });
   write(dir, 'done', { id: 'c-1', mergedAt: '2026-10-23T00:00:00Z' });
-  coordinatorSweep({ pipelineDir: dir });
+  await coordinatorSweep({ pipelineDir: dir });
   const hub = readHub(dir, 'hub-c');
   assert.equal(hub.subTasks[0].status, 'merged');
   assert.equal(hub.subTasks[0].carriedBy, undefined);
