@@ -915,3 +915,82 @@ test('coordinatorSweep reads the coordinating files concurrently but still count
   assert.equal(summary.errors, 2);
   assert.equal(summary.updated, 0);
 });
+
+test('inert earlier half: when the last sibling merges, the child with inertCheck is archived to _archived_no_action/ with an explanatory history event', async () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', {
+    id: 'hub-inert', status: 'coordinating', history: [],
+    subTasks: [
+      { id: 'i-a', title: 'first half', status: 'pending', inertCheck: true },
+      { id: 'i-b', title: 'last sibling', status: 'pending' },
+    ],
+  });
+  // Both children are terminal-good (merged) so the hub is ready to complete
+  write(dir, 'done', { id: 'i-a', mergedAt: '2026-10-01T00:00:00Z' });
+  write(dir, 'done', { id: 'i-b', mergedAt: '2026-10-02T00:00:00Z' });
+
+  const summary = await coordinatorSweep({ pipelineDir: dir });
+  assert.equal(summary.completed, 1);
+
+  // The inert child (i-a) should be archived to _archived_no_action/
+  const inertFile = path.join(dir, 'queue', 'done', '_archived_no_action', 'i-a.json');
+  assert.ok(fs.existsSync(inertFile), 'inert child archived to _archived_no_action/');
+  const archived = JSON.parse(fs.readFileSync(inertFile, 'utf8'));
+  assert.equal(archived.id, 'i-a');
+  // Original should be gone from done/
+  assert.equal(fs.existsSync(path.join(dir, 'queue', 'done', 'i-a.json')), false);
+
+  // The parent should have an advisory history event explaining the auto-resolution
+  const parent = JSON.parse(fs.readFileSync(path.join(dir, 'queue', 'done', 'hub-inert.json'), 'utf8'));
+  const inertEvent = parent.history.find((h) => h.stage === 'advisory' && h.detail && h.detail.includes('inert'));
+  assert.ok(inertEvent, 'parent has an advisory history event about inert half');
+  assert.match(inertEvent.detail, /last sibling merged/);
+  assert.match(inertEvent.detail, /i-a/);
+});
+
+test('inert earlier half: when the last sibling merges, a child WITHOUT inertCheck is NOT archived', async () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', {
+    id: 'hub-no-inert', status: 'coordinating', history: [],
+    subTasks: [
+      { id: 'n-a', title: 'first half', status: 'pending' },
+      { id: 'n-b', title: 'last sibling', status: 'pending' },
+    ],
+  });
+  write(dir, 'done', { id: 'n-a', mergedAt: '2026-10-01T00:00:00Z' });
+  write(dir, 'done', { id: 'n-b', mergedAt: '2026-10-02T00:00:00Z' });
+
+  const summary = await coordinatorSweep({ pipelineDir: dir });
+  assert.equal(summary.completed, 1);
+
+  // Neither child should be archived -- both stay in done/
+  assert.ok(fs.existsSync(path.join(dir, 'queue', 'done', 'n-a.json')), 'n-a stays in done/');
+  assert.ok(fs.existsSync(path.join(dir, 'queue', 'done', 'n-b.json')), 'n-b stays in done/');
+  // No inert-related history event on the parent
+  const parent = JSON.parse(fs.readFileSync(path.join(dir, 'queue', 'done', 'hub-no-inert.json'), 'utf8'));
+  const inertEvent = parent.history.find((h) => h.stage === 'advisory' && h.detail && h.detail.includes('inert'));
+  assert.equal(inertEvent, undefined, 'no inert history event when no child has inertCheck');
+});
+
+test('inert earlier half: an incomplete hub does NOT archive children even if one carries inertCheck', async () => {
+  const dir = makePipeline();
+  write(dir, 'coordinating', {
+    id: 'hub-incomplete', status: 'coordinating', history: [],
+    subTasks: [
+      { id: 'x-a', title: 'first half', status: 'pending', inertCheck: true },
+      { id: 'x-b', title: 'last sibling', status: 'pending' },
+    ],
+  });
+  // Only one child is done -- hub is NOT complete
+  write(dir, 'done', { id: 'x-a', mergedAt: '2026-10-01T00:00:00Z' });
+  write(dir, 'adhoc', { id: 'x-b' });
+
+  const summary = await coordinatorSweep({ pipelineDir: dir });
+  assert.equal(summary.completed, 0, 'hub not completed because x-b is still pending');
+
+  // The inert child should NOT be archived -- the hub is not complete
+  const inertFile = path.join(dir, 'queue', 'done', '_archived_no_action', 'x-a.json');
+  assert.equal(fs.existsSync(inertFile), false, 'inert child NOT archived when hub is incomplete');
+  // The child stays in its original location
+  assert.ok(fs.existsSync(path.join(dir, 'queue', 'done', 'x-a.json')), 'x-a stays in done/');
+});

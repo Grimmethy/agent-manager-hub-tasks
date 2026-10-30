@@ -586,6 +586,29 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
       parent.doneMarker = `coordinator complete: all ${parent.subTasks.length} sub-task(s) done`;
       stampHubMerged(parent);
       appendHistoryEvent(parent, 'done', parent.doneMarker);
+      // Auto-resolve inert earlier halves: when the decompose pass marked a child with
+      // `inertCheck`, the hub's last sibling just merged and that earlier half no longer
+      // needs to sit in needs-work forever. Archive it to _archived_no_action/ with an
+      // explanatory history event so a human (or the dashboard) can see why it was closed.
+      // Children WITHOUT inertCheck are left untouched -- this is purely opt-in from the
+      // decompose pass, not a blanket archive.
+      const inertArchived = [];
+      for (const st of parent.subTasks) {
+        if (!st || !st.id || !st.inertCheck) continue;
+        const childSrc = path.join(pipelineDir, 'queue', 'done', `${st.id}.json`);
+        const inertDir = path.join(pipelineDir, 'queue', 'done', '_archived_no_action');
+        try {
+          fs.mkdirSync(inertDir, { recursive: true });
+          if (fs.existsSync(childSrc)) {
+            fs.renameSync(childSrc, path.join(inertDir, `${st.id}.json`));
+            inertArchived.push(st.id);
+          }
+        } catch { /* best-effort -- next tick retries */ }
+      }
+      if (inertArchived.length) {
+        appendHistoryEvent(parent, 'advisory',
+          `auto-resolved ${inertArchived.length} inert earlier half(s) -- last sibling merged, no further action needed: ${inertArchived.join(', ')}`);
+      }
       moveToDone(file, doneDir, name, parent);
       summary.completed += 1;
     } else {
