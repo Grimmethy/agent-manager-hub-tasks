@@ -183,3 +183,226 @@ VERDICT CONSTRAINT (mandatory for this task):
 - Refusals, hedging, or a third outcome (including "Uncertain", "I cannot determine", or any other qualifier) are NOT acceptable. Pick the one verdict that best fits the evidence in the snippet and commit to it.
 
 VERDICT: GENUINE
+
+### AC-2 · Coordinator Sweep Decomposition
+Strength: Strong
+Files: src/coordinator-sweep.js
+Symbol: coordinatorSweep
+Snippet:
+```
+}
+
+function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGate, runWiring = runStackedWiring, runAutoMerge = autoMergeVerifiedMoveChild } = {}) {
+  const coordDir = path.join(pipelineDir, 'queue', 'coordinating');
+  const doneDir = path.join(pipelineDir, 'queue', 'done');
+  let resolvedRepoRoot = repoRoot;
+  if (resolvedRepoRoot === undefined) { try { ({ repoRoot: resolvedRepoRoot } = getConfig()); } catch { resolvedRepoRoot = null; } }
+  const summary = { checked: 0, updated: 0, completed: 0, errors: 0 };
+
+  // Label every hub that has no HUB#### yet (oldest first), before the loop below reads them.
+  try { const labelled = assignMissingHubSerials(pipelineDir); if (labelled) summary.hubsLabelled = labelled; } catch (e) { console.warn(`[coordinator-sweep] hub serial backfill failed (advisory): ${e.message}`); }
+
+  let names;
+  try {
+    names = fs.readdirSync(coordDir).filter((f) => f.endsWith('.json'));
+  } catch (err) {
+    if (err.code === 'ENOENT') { console.warn(`[coordinator-sweep] ${coordDir} does not exist yet -- nothing to sweep`); return summary; }
+    summary.errors += 1;
+    console.error(`[coordinator-sweep] readdirSync failed for ${coordDir}: ${err.code || 'UNKNOWN'} -- ${err.message}`);
+    return summary;
+  }
+
+  for (const name of names) {
+    const file = path.join(coordDir, name);
+    let parent;
+    try {
+      parent = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      summary.errors += 1;
+      continue; // a malformed coordinating file is not this sweep's problem to fix
+    }
+    if (!Array.isArray(parent.subTasks) || parent.subTasks.length === 0) {
+      // A coordinating parent with no checklist is a bug upstream -- complete it out so it
+      // does not sit here forever.
+      //
+      // 2026-09-14, screaminggoatclubmt: "fix the mislabeling" -- a hub that carries
+      // `coordinatorBlocked` from the moment it was filed (file-decompose-to-hub.js's
+      // fileBlockedHub(): validatePlan() found a hard problem, subTasks was `[]` from
+      // creation, ZERO children were ever attempted) was being routed through
+      // stampHubMerged() exactly like a hub whose children ALL genuinely shipped, so its
+      // history read "created -> merged -> done" and the dashboard reported it as a
+      // successful merge. Confirmed live: 33 `Decompose <file> -- plan needs revision`
+      // records in queue/done/ carry this exact false "merged" disposition. Route the
+      // rejected-at-creation case through `noop` instead (task-disposition.js's own
+      // definition: "the apply produced no change... no code change") -- still stamps
+      // mergedAt so any (unlikely, since no children ever existed) dependsOn sibling isn't
+      // blocked forever, per stampHubMerged's own reasoning, just without the false
+      // "merged" label.
+      const rejectedAtCreation = !!parent.coordinatorBlocked;
+      parent.status = 'done';
+      parent.doneMarker = rejectedAtCreation
+        ? 'coordinator hub rejected at creation -- no sub-tasks were ever filed'
+        : 'coordinator had no sub-tasks -- completed';
+      stampHubMerged(parent, rejectedAtCreation ? {
+        disposition: 'noop',
+        detail: 'coordinator hub: plan rejected at creation, no sub-tasks were ever filed',
+      } : undefined);
+      appendHistoryEvent(parent, 'done', parent.doneMarker);
+      // 2026-09-14, screaminggoatclubmt: "fold it into the watchdog sweep" -- file
+      // straight into done/_archived_no_action/ instead of done/'s top level for the
+      // rejected-at-creation case: it produced zero real work, so there is nothing for a
+      // human to review or a dependent to wait on, the exact "no action" meaning this
+      // folder already carries elsewhere (staleness-auto-archive.js's own DENY-vote and
+      // archive-recommendation paths file directly here the same way, with no human
+      // click in between -- established precedent for an automated sweep to use this
+      // folder, not only the dashboard's own Archive button). Otherwise these hubs would
+      // just sit in done/'s top level for up to done-archive.js's 30-day retention window
+      // before its generic time-based pass finally moved them. The genuine
+      // all-children-succeeded case is unaffected -- it still lands in done/ normally.
+      const destDir = rejectedAtCreation ? path.join(doneDir, '_archived_no_action') : doneDir;
+      if (rejectedAtCreation) {
+        appendHistoryEvent(parent, 'archived', 'Auto-archived: coordinator hub rejected at creation, no sub-tasks were ever filed -- nothing to review or wait on');
+      }
+      moveToDone(file, destDir, name, parent);
+      summary.checked += 1;
+      summary.completed += 1;
+      continue;
+    }
+
+    summary.checked += 1;
+    const recById = new Map();
+    for (const st of parent.subTasks) {
+      const rec = st && st.id ? findTaskRecordById(pipelineDir, st.id) : null;
+      recById.set(st && st.id, rec);
+      const carried = applyCarryHold(st, classifyChildStatus(rec), Date.now());
+      st.status = carried.status;
+      if (carried.event) appendHistoryEvent(parent, 'advisory', carried.event);
+    }
+    // A hub built before "one hub = one stacked chain" may be mixed (some pieces stacked, some independent and stuck behind a merge):
+    // put its not-yet-started pieces onto the chain (hub-restack.js). Before the held-marker below, which reads the fresh fields.
+    try {
+      const restacked = restackHubChain(parent, recById);
+      if (restacked.length) { summary.restacked = (summary.restacked || 0) + restacked.length; appendHistoryEvent(parent, 'advisory', `restacked ${restacked.length} piece(s) onto the hub's shared branch`); }
+    } catch { /* repair is best-effort */ }
+    // Members lead with their hub's label (hub-serial.js): queueSubTasks does it for the hubs it builds, this covers older hubs and the
+    // producers that mint their own child ids. The checklist titles always follow; a member's record is only rewritten while it is idle.
+    try { const n = retitleHubMembers(parent, recById); if (n) summary.membersRetitled = (summary.membersRetitled || 0) + n; } catch { /* cosmetic */ }
+    // A hub renamed to its HUB#### id (hub-rename.js) may have a member a worker was mid-way through: point its decomposedFrom at the new id once idle.
+    try { const n = repairStaleHubRefs(parent, recById); if (n) summary.staleHubRefsRepaired = (summary.staleHubRefsRepaired || 0) + n; } catch { /* cosmetic */ }
+    // A piece that is only waiting for an earlier sibling to land (hub-priority.js hubHasUnmergedEarlierSibling) reads 'in-progress' and
+    // looks stuck; say what it is waiting for so the checklist is honest. Computed after every status above is fresh (the check reads
+    // sibling statuses off `parent`), and cleared as soon as the piece is released.
+    for (const st of parent.subTasks) {
+      const rec = st && st.id ? recById.get(st.id) : null;
+      let held = null;
+      if (st && st.status === 'in-progress' && rec && rec.task) {
+        try { const h = hubHasUnmergedEarlierSibling(pipelineDir, rec.task, parent); if (h.blocked) held = { id: h.blockingSiblingId, status: h.blockingSiblingStatus }; } catch { /* advisory */ }
+      }
+      if (st && held) st.heldFor = held; else if (st) delete st.heldFor;
+    }
+
+    // A non-stacked decompose hub: its move children carry no dependsOn, so nothing else
+    // reconciles their merge. Confirm each `done` child against origin/<main>'s commit
+    // trailer and flip it to `merged` -- then the hub only completes on all-MERGED, so its
+    // mergedAt stamp is honest and dependents don't unblock against a pre-split main.
+    const strictMergeHub = parent.decomposeHub === true && parent.mode !== 'stacked';
+    if (strictMergeHub) {
+      reconcileDecomposeChildMerges(pipelineDir, resolvedRepoRoot, parent.subTasks, recById, parent, runAutoMerge);
+    }
+
+    let doneCount = 0;
+    let builtCount = 0;
+    for (const st of parent.subTasks) {
+      st.phase = childPhase(st.status, strictMergeHub); // bare `done` is NOT enough to complete a strict-merge hub
+      if (st.phase === 'merged') { doneCount += 1; builtCount += 1; } else if (st.phase === 'built') builtCount += 1;
+    }
+    // done = merged/closed (completion, unchanged); built = done + finished-but-awaiting-merge (what the UI shows as progress).
+    parent.progress = { done: doneCount, built: builtCount, total: parent.subTasks.length };
+    parent.lastReconciledAt = new Date().toISOString();
+
+    // Stuck-chain detection: surface a hub that can never complete on its own instead of
+    // leaving it frozen at partial progress. The hub STAYS in coordinating/ so the sweep
+    // keeps reconciling it (and auto-clears / auto-completes if the children get unstuck);
+    // what changes is a `coordinatorBlocked` marker + a `blockedReason` the dashboard
+    // renders, and after a grace period an `escalated` flag + a louder history event.
+    if (doneCount < parent.subTasks.length) {
+      const stuck = findStuckChildren(parent.subTasks, recById);
+      const now = new Date().toISOString();
+      if (stuck.length > 0) {
+        const signature = stuck.map((s) => `${s.id}:${s.why}`).sort().join(' | ');
+        if (!parent.coordinatorBlocked || parent.coordinatorBlocked.signature !== signature) {
+          parent.coordinatorBlocked = { signature, since: now, children: stuck, escalated: false };
+          appendHistoryEvent(parent, 'blocked', `coordinator stuck: ${stuck.map((s) => `${s.id} -- ${s.why}`).join('; ')}`.slice(0, 500));
+          summary.blocked = (summary.blocked || 0) + 1;
+        }
+        parent.blockedReason = `${stuck.length} sub-task(s) can't proceed: ${stuck.map((s) => `${s.id.replace(/^adhoc-/, '')} (${s.why})`).join('; ')}`.slice(0, 400);
+        const escalateMs = stuckEscalateMs(parent);
+        const stuckForMs = Date.now() - Date.parse(parent.coordinatorBlocked.since || now);
+        if (escalateMs > 0 && stuckForMs >= escalateMs && !parent.coordinatorBlocked.escalated) {
+          parent.coordinatorBlocked.escalated = true;
+          parent.coordinatorBlocked.escalatedAt = now;
+          appendHistoryEvent(parent, 'advisory',
+            `coordinator hub stuck ${stuckForMs >= 86400000 ? `${Math.floor(stuckForMs / 86400000)}d` : `${Math.floor(stuckForMs / 3600000)}h`} -- needs a human: resolve/requeue/archive ${stuck.map((s) => s.id).join(', ')}, or archive this hub`);
+          summary.escalated = (summary.escalated || 0) + 1;
+        }
+      } else if (parent.coordinatorBlocked) {
+        delete parent.coordinatorBlocked;
+        delete parent.blockedReason;
+        appendHistoryEvent(parent, 'advisory', 'coordinator unblocked -- sub-tasks progressing again');
+        summary.unblocked = (summary.unblocked || 0) + 1;
+      }
+    }
+
+    const allChildrenDone = doneCount === parent.subTasks.length;
+
+    // A child went back to work (e.g. a human requeued the wiring step after a gate
+    // failure) -- re-arm the gate so the next all-done transition re-checks the branch.
+    if (!allChildrenDone && parent.integrationGate
+        && ['failed', 'errored'].includes(parent.integrationGate.status)) {
+      parent.integrationGate = { status: 'pending', reArmedAt: new Date().toISOString() };
+      delete parent.blockedReason;
+      delete parent.coordinatorBlocked;
+    }
+
+    // Stacked all-blueprint decompose hub: every move child committed its Blueprint module
+    // to the branch, but nothing registered them yet. Do the `register_blueprint` splice
+    // deterministically now, before the gate. On failure the hub stays in coordinating/
+    // with a blockedReason; on success wiringPending clears and the next tick runs the gate
+    // against the wired branch.
+    if (allChildrenDone && parent.mode === 'stacked' && parent.wiringPending
+        && (!parent.integrationGate || parent.integrationGate.status === 'pending')) {
+      const res = runWiring(parent, resolvedRepoRoot);
+      const now = new Date().toISOString();
+      if (res && res.ok) {
+        parent.wiringPending = false;
+        appendHistoryEvent(parent, 'advisory', res.skipped
+          ? `blueprint wiring already present on ${parent.branch}`
+          : `wired ${res.registered} blueprint(s) onto ${parent.branch}${res.sha ? ` @ ${res.sha.slice(0, 10)}` : ''}`);
+        summary.wired = (summary.wired || 0) + 1;
+      } else {
+        parent.blockedReason = `deterministic blueprint wiring failed on ${parent.branch}: ${res && res.detail ? res.detail : 'unknown'}`.slice(0, 600);
+        parent.coordinatorBlocked = {
+          signature: 'blueprint-wiring:failed', since: now, escalated: false,
+          children: [{ id: parent.subTasks[parent.subTasks.length - 1].id, why: (res && res.detail) || 'wiring failed' }],
+        };
+        appendHistoryEvent(parent, 'blocked', parent.blockedReason);
+        summary.wiringFailed = (summary.wiringFailed || 0) + 1;
+      }
+      try { fs.writeFileSync(file, JSON.stringify(parent, null, 2)); summary.updated += 1; }
+      catch (err) { console.error(`coordinator-sweep: failed to write ${file}: ${err.message}`); summary.errors += 1; }
+      continue;
+    }
+// ... [truncated for review: this function continues for 56 more line(s) not shown]
+```
+
+Problem:
+The function `coordinatorSweep` is not merely long — it is a monolithic orchestrator that bundles at least eight distinct responsibilities: labeling hubs without serials, reading coordinating files, handling rejected-at-creation hubs, processing sub-tasks (status, carry, retitle, repair refs, held-for), strict-merge hub reconciliation, progress tracking, stuck-chain detection, and all-blueprint decompose wiring. These responsibilities are tightly coupled within a single loop over `parent.subTasks`, with nested conditionals, state mutations, and I/O operations (like `fs.writeFileSync`) that are not logically grouped. This violates the Single Responsibility Principle and makes the function untestable as a whole — any change to one responsibility risks breaking others.
+
+Solution:
+Extract each responsibility into its own named function: `assignMissingHubSerials()` (keep), `readCoordinatingFiles()`, `handleRejectedAtCreation(parent)`, `processSubTasks(parent, recById)`, `handleStrictMergeHub(parent, recById)`, `updateParentProgress(parent, doneCount, builtCount)`, `detectAndManageStuckChain(parent, recById)`, `handleAllBlueprintDecompose(parent, runWiring)`, and `writeUpdatedFile(file, parent)`. Each function should handle one logical concern, with clear inputs and outputs, and no side effects beyond its own scope. The main loop should simply orchestrate these functions in sequence, passing state cleanly between them.
+
+Benefits:
+Decomposing the function improves testability — each unit can be unit-tested in isolation. It also enhances readability, as the logic of each responsibility is self-contained and easier to follow. Reviewers can focus on one concern at a time, reducing cognitive load. Maintenance becomes easier, since changes to one part (e.g., retitle logic) won’t require retesting or refactoring the entire coordinator.
+
+VERDICT CONSTRAINT:
+Genuine
