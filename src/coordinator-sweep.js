@@ -191,6 +191,12 @@ function classifyChildStatus(rec) {
     const disp = task.terminalDisposition;
     if (disp && disp !== 'merged') return disp;
     if (merged) return 'merged';
+    // 2026-10-24, HUB0004: a piece built on the parent's stacked branch is `done` (code
+    // committed) but not yet merged -- report 'pending-merge' so the hub's checklist shows
+    // real progress and hub-priority.js does not block later pieces behind it. Without this,
+    // a stacked hub's pieces would read 'done' forever until the whole branch merged, making
+    // the hub appear complete prematurely and preventing dependent work from unblocking.
+    if (state === 'done' && task.stacked && task.stacked.branch) return 'pending-merge';
     return state === 'done' ? 'done' : 'merged'; // 'archived' + no disposition (pre-terminalDisposition-tracking record) falls back to the old default
   }
   if (state === 'archived_no_action') return 'abandoned';
@@ -506,7 +512,12 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
       }
     }
 
-    const allChildrenDone = doneCount === parent.subTasks.length;
+    // For stacked hubs, "all done" means all children have at least built (done or pending-merge),
+    // because the gate checks the shared branch, not individual merges. For non-stacked hubs,
+    // "all done" means all children are merged (doneCount).
+    const allChildrenDone = parent.mode === 'stacked'
+      ? builtCount === parent.subTasks.length
+      : doneCount === parent.subTasks.length;
 
     // A child went back to work (e.g. a human requeued the wiring step after a gate
     // failure) -- re-arm the gate so the next all-done transition re-checks the branch.
