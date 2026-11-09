@@ -1,0 +1,7 @@
+{
+  "name": "agent-manager",
+  "version": "1.0.0",
+  "description": "Stub agent-manager for coordinator-sweep tests",
+  "main": "src/index.js",
+  "license": "MIT"
+}

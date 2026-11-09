@@ -512,7 +512,12 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
       }
     }
 
-    const allChildrenDone = doneCount === parent.subTasks.length;
+    // For stacked hubs, "all done" means all children have at least built (done or pending-merge),
+    // because the gate checks the shared branch, not individual merges. For non-stacked hubs,
+    // "all done" means all children are merged (doneCount).
+    const allChildrenDone = parent.mode === 'stacked'
+      ? builtCount === parent.subTasks.length
+      : doneCount === parent.subTasks.length;
 
     // A child went back to work (e.g. a human requeued the wiring step after a gate
     // failure) -- re-arm the gate so the next all-done transition re-checks the branch.
