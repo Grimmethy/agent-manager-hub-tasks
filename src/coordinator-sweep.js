@@ -30,6 +30,7 @@ const fs = require('fs');
 const path = require('path');
 const { getConfig, ensureRegistered } = require('agent-manager/src/config.js');
 const { findTaskRecordById } = require('agent-manager/src/forensic-bundle.js');
+const { findChildRecord } = require('./child-record.js');
 const { appendHistoryEvent } = require('agent-manager/src/task-history.js');
 const { runIntegrationGate, realExec } = require('./decompose-integration-gate.js');
 const { wireDecomposedBlueprints } = require('agent-manager/src/wire-decomposed-blueprints.js');
@@ -431,7 +432,7 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
     summary.checked += 1;
     const recById = new Map();
     for (const st of parent.subTasks) {
-      const rec = st && st.id ? findTaskRecordById(pipelineDir, st.id) : null;
+      const rec = st && st.id ? findChildRecord(pipelineDir, st.id, findTaskRecordById) : null;
       recById.set(st && st.id, rec);
       const carried = applyCarryHold(st, classifyChildStatus(rec), Date.now());
       st.status = carried.status;
