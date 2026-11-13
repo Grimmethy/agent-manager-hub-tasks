@@ -503,6 +503,7 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
           parent.coordinatorBlocked.escalatedAt = now;
           appendHistoryEvent(parent, 'advisory',
             `coordinator hub stuck ${stuckForMs >= 86400000 ? `${Math.floor(stuckForMs / 86400000)}d` : `${Math.floor(stuckForMs / 3600000)}h`} -- needs a human: resolve/requeue/archive ${stuck.map((s) => s.id).join(', ')}, or archive this hub`);
+          console.log(`[coordinator-sweep] ${parent.id}: escalated after ${Math.floor(stuckForMs / 3600000)}h stuck -- needs a human`);
           summary.escalated = (summary.escalated || 0) + 1;
         }
       } else if (parent.coordinatorBlocked) {
@@ -524,7 +525,11 @@ async function coordinatorSweep({ pipelineDir, repoRoot, runGate = runStackedGat
     // failure) -- re-arm the gate so the next all-done transition re-checks the branch.
     if (!allChildrenDone && parent.integrationGate
         && ['failed', 'errored'].includes(parent.integrationGate.status)) {
+      const clearedReason = parent.blockedReason || null;
       parent.integrationGate = { status: 'pending', reArmedAt: new Date().toISOString() };
+      appendHistoryEvent(parent, 'advisory',
+        `integration gate re-armed -- blocker cleared${clearedReason ? `: ${clearedReason}` : ' (no blockedReason set)'}`.slice(0, 500));
+      console.log(`[coordinator-sweep] ${parent.id}: integration gate re-armed, blocker cleared${clearedReason ? `: ${clearedReason}` : ''}`);
       delete parent.blockedReason;
       delete parent.coordinatorBlocked;
     }

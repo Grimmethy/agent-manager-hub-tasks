@@ -543,6 +543,19 @@ test('stacked hub: a re-queued wiring child re-arms the gate', async () => {
   assert.equal(parent.blockedReason, undefined);
 });
 
+// The re-arm must leave an audit trail naming the blocker it cleared. This fixture has no
+// coordinatorBlocked: the sweep's unblocked branch would clear blockedReason before the re-arm runs.
+test('stacked hub: the integration-gate re-arm history names the blockedReason it cleared', async () => {
+  const dir = makePipeline();
+  stackedHub(dir, { integrationGate: { status: 'failed', checks: [] }, blockedReason: 'old-blocker-xyz' });
+  fs.unlinkSync(path.join(dir, 'queue', 'done', 'adhoc-decompose-x-99-wiring.json'));
+  write(dir, 'adhoc', { id: 'adhoc-decompose-x-99-wiring', stacked: { branch: 'agent/decompose-x' } });
+  await coordinatorSweep({ pipelineDir: dir, repoRoot: null, runGate: () => ({ ok: true, checks: [] }) });
+  const parent = readParent(dir, 'coordinating', 'file-decompose-hub-x');
+  assert.equal(parent.integrationGate.status, 'pending');
+  assert.match(JSON.stringify(parent.history), /integration gate re-armed[^"]*old-blocker-xyz/);
+});
+
 // --- stacked file-decompose hub: deterministic blueprint wiring ------------------------
 
 function wiringHub(dir, extra = {}) {
