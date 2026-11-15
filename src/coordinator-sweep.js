@@ -329,6 +329,13 @@ function runStackedGate(parent, repoRoot) {
 // `register_blueprint` block onto the shared branch so the gate has something to verify.
 // Only fires for hubs `fileHub()` stamped `wiringPending` + `wiringMoves` (all-blueprint
 // decompositions); a mixed decomposition still has an LLM wiring child in its subTasks.
+//
+// Error contract: runStackedWiring does not rethrow.
+// - Missing repoRoot/branch/sourceFile/wiringMoves: returns { ok: false, detail } without logging.
+// - Exception thrown by wireDecomposedBlueprints: logged with console.error under the
+//   "[coordinator-sweep]" prefix (message and stack when available), then returned as
+//   { ok: false, detail: <error message> }.
+// - Otherwise returns wireDecomposedBlueprints' result unchanged.
 function runStackedWiring(parent, repoRoot) {
   if (!repoRoot || !parent.branch || !parent.sourceFile || !Array.isArray(parent.wiringMoves)) {
     return { ok: false, detail: 'missing repoRoot/branch/sourceFile/wiringMoves' };
