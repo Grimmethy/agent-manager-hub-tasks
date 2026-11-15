@@ -11,7 +11,7 @@ const { execFileSync } = require('child_process');
 process.env.AGENT_MANAGER_REPO_ROOT = os.tmpdir();
 process.env.AGENT_MANAGER_PIPELINE_DIR = process.env.AGENT_MANAGER_REPO_ROOT;
 
-const { CARRY_MAX_MS, applyCarryHold, holdPiece, releasePiece } = require('./carry-hold.js');
+const { CARRY_MAX_MS, applyCarryHold, holdPiece, releasePiece, takePiece } = require('./carry-hold.js');
 const { coordinatorSweep, TERMINAL_GOOD } = require('./coordinator-sweep.js');
 const { hubHasUnmergedEarlierSibling } = require('agent-manager/src/hub-priority.js');
 
@@ -127,4 +127,99 @@ test('scripts/carry-hold.js: hold and release through the CLI, exit 1 on an unkn
   execFileSync('node', [script, 'release', 'f-1'], { env, encoding: 'utf8' });
   assert.equal(readHub(dir, 'hub-f').subTasks[0].carriedBy, undefined);
   assert.throws(() => execFileSync('node', [script, 'hold', 'zzz', 'op'], { env, stdio: 'pipe' }), (e) => e.status === 1);
+});
+
+const ensureState = (dir, state) => fs.mkdirSync(path.join(dir, 'queue', state), { recursive: true });
+const recordPath = (dir, state, id) => path.join(dir, 'queue', state, `${id}.json`);
+const tmpDest = () => fs.mkdtempSync(path.join(os.tmpdir(), 'take-'));
+
+test('takePiece: moves the record to destDir and marks the hub piece carried', () => {
+  const dir = makePipeline();
+  ensureState(dir, 'pending');
+  const destDir = tmpDest();
+  try {
+    write(dir, 'coordinating', hubWith('hub-t1', [{ id: 't-1', title: 'one', status: 'pending' }, { id: 't-2', title: 'two', status: 'pending' }]));
+    write(dir, 'pending', { id: 't-1' });
+    const out = takePiece(dir, 't-1', 'op', destDir, NOW);
+    assert.equal(out, path.join(destDir, 't-1.json'));
+    assert.ok(fs.existsSync(out), 'record is in destDir');
+    assert.equal(fs.existsSync(recordPath(dir, 'pending', 't-1')), false, 'record left the queue');
+    assert.deepEqual(readHub(dir, 'hub-t1').subTasks[0].carriedBy, { who: 'op', at: new Date(NOW).toISOString() });
+  } finally {
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
+});
+
+test('takePiece: refuses a drafting record, leaving it in place with no mark', () => {
+  const dir = makePipeline();
+  ensureState(dir, 'drafting');
+  const destDir = tmpDest();
+  try {
+    write(dir, 'coordinating', hubWith('hub-t2', [{ id: 't-1', title: 'one', status: 'pending' }]));
+    write(dir, 'drafting', { id: 't-1' });
+    assert.throws(() => takePiece(dir, 't-1', 'op', destDir, NOW), /drafting/);
+    assert.equal(fs.existsSync(recordPath(dir, 'drafting', 't-1')), true, 'record stays in place');
+    assert.equal(fs.readdirSync(destDir).length, 0, 'nothing moved');
+    assert.equal(readHub(dir, 'hub-t2').subTasks[0].carriedBy, undefined, 'no mark written');
+  } finally {
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
+});
+
+test('takePiece: refuses a missing record and writes no mark', () => {
+  const dir = makePipeline();
+  const destDir = tmpDest();
+  try {
+    write(dir, 'coordinating', hubWith('hub-t3', [{ id: 't-1', title: 'one', status: 'pending' }]));
+    assert.throws(() => takePiece(dir, 't-1', 'op', destDir, NOW), /no record/);
+    assert.equal(readHub(dir, 'hub-t3').subTasks[0].carriedBy, undefined, 'no mark written');
+    assert.equal(fs.readdirSync(destDir).length, 0, 'nothing moved');
+  } finally {
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
+});
+
+test('takePiece: refuses a missing hub and writes nothing', () => {
+  const dir = makePipeline();
+  ensureState(dir, 'pending');
+  const destDir = tmpDest();
+  try {
+    write(dir, 'pending', { id: 't-1' });
+    const before = fs.readdirSync(path.join(dir, 'queue', 'coordinating'));
+    assert.throws(() => takePiece(dir, 't-1', 'op', destDir, NOW), /no hub/);
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'queue', 'coordinating')), before, 'no hub file written');
+    assert.equal(fs.existsSync(recordPath(dir, 'pending', 't-1')), true, 'record stays in place');
+    assert.equal(fs.readdirSync(destDir).length, 0, 'nothing moved');
+  } finally {
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
+});
+
+test('takePiece: a missing destDir is refused before any write', () => {
+  const dir = makePipeline();
+  ensureState(dir, 'pending');
+  const missing = path.join(os.tmpdir(), `no-such-take-dir-${process.pid}-${Date.now()}`);
+  write(dir, 'coordinating', hubWith('hub-t4', [{ id: 't-1', title: 'one', status: 'pending' }]));
+  write(dir, 'pending', { id: 't-1' });
+  assert.throws(() => takePiece(dir, 't-1', 'op', missing, NOW), /not an existing directory/);
+  assert.equal(readHub(dir, 'hub-t4').subTasks[0].carriedBy, undefined, 'no mark written');
+  assert.equal(fs.existsSync(recordPath(dir, 'pending', 't-1')), true, 'record stays in place');
+});
+
+test('takePiece: a failed move restores the prior carriedBy mark', () => {
+  const dir = makePipeline();
+  ensureState(dir, 'pending');
+  const destDir = tmpDest();
+  try {
+    const prev = { who: 'old', at: new Date(NOW - 3600e3).toISOString() };
+    write(dir, 'coordinating', hubWith('hub-t5', [{ id: 't-1', title: 'one', status: 'pending', carriedBy: prev }]));
+    write(dir, 'pending', { id: 't-1' });
+    // A directory where the record should land makes the rename fail (EISDIR on Linux).
+    fs.mkdirSync(path.join(destDir, 't-1.json'));
+    assert.throws(() => takePiece(dir, 't-1', 'op', destDir, NOW));
+    assert.deepEqual(readHub(dir, 'hub-t5').subTasks[0].carriedBy, prev, 'prior mark restored');
+    assert.equal(fs.existsSync(recordPath(dir, 'pending', 't-1')), true, 'record stays in the queue');
+  } finally {
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
 });
