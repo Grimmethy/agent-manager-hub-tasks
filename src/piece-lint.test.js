@@ -68,6 +68,15 @@ test('resolveContradictions leaves a piece untouched when the check itself throw
   assert.equal(resolveContradictions([bad])[0], bad);
 });
 
+test('resolveContradictions fails open when a title getter throws inside the check, returning the same object unchanged', () => {
+  const rawText = 'Add tests to src/a.js. Do not touch src/a.js.';
+  const subtask = { rawText, get title() { throw new Error('title boom'); } };
+  let out;
+  assert.doesNotThrow(() => { out = resolveContradictions([subtask]); });
+  assert.equal(out[0], subtask);
+  assert.equal(subtask.rawText, rawText);
+});
+
 test('runDecomposePass lints against the declared files: a banned path that is in the piece\'s files array is a contradiction', async () => {
   const response = JSON.stringify({ one_pass: false, subtasks: [
     { title: 'Tests', rawText: 'Cover the new helper. Do not touch test/helper.test.mjs.', files: ['test/helper.test.mjs'] },
