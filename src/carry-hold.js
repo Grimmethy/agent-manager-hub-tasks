@@ -33,7 +33,10 @@ function applyCarryHold(st, status, nowMs) {
 function findHubFile(pipelineDir, taskId) {
   const dir = path.join(pipelineDir, 'queue', 'coordinating');
   let names = [];
-  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { /* no coordinating dir */ }
+  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch (e) {
+    // Only a missing coordinating dir means "no hub"; EACCES, EMFILE, EIO, ENOTDIR etc. are real faults and must surface.
+    if (!e || e.code !== 'ENOENT') throw new Error(`cannot read ${dir}: ${(e && (e.code || e.message)) || e}`, { cause: e });
+  }
   for (const name of names) {
     const file = path.join(dir, name);
     let hub;
