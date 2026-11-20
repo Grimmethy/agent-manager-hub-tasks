@@ -117,6 +117,25 @@ test('holdPiece refuses an unknown task id and a missing who', () => {
   assert.throws(() => releasePiece(dir, 'nope'), /lists a piece 'nope'/);
 });
 
+test('holdPiece / releasePiece: a missing coordinating dir still reads as no hub', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-hold-nodir-'));
+  assert.throws(() => holdPiece(dir, 'x-1', 'op'), /no hub in .* lists a piece 'x-1'/);
+  assert.throws(() => releasePiece(dir, 'x-1'), /no hub in .* lists a piece 'x-1'/);
+});
+
+test('holdPiece / releasePiece: an unreadable coordinating dir surfaces the fs error, not "no hub"', () => {
+  const dir = makePipeline();
+  const orig = fs.readdirSync;
+  fs.readdirSync = () => { const e = new Error('permission denied'); e.code = 'EACCES'; throw e; };
+  try {
+    for (const fn of [() => holdPiece(dir, 'x-1', 'op'), () => releasePiece(dir, 'x-1')]) {
+      assert.throws(fn, (e) => /EACCES/.test(e.message) && e.message.includes(path.join(dir, 'queue', 'coordinating')) && !/no hub in/.test(e.message));
+    }
+  } finally {
+    fs.readdirSync = orig;
+  }
+});
+
 test('scripts/carry-hold.js: hold and release through the CLI, exit 1 on an unknown id', () => {
   const dir = makePipeline();
   write(dir, 'coordinating', hubWith('hub-f', [{ id: 'f-1', title: 'one', status: 'pending' }]));
