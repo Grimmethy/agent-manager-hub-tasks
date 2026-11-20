@@ -123,18 +123,25 @@ function runIntegrationGate({ repoRoot, branch, mainBranch = 'master', sourceFil
   const branchRef = 'refs/decompose-gate/branch';
   const mainRef = 'refs/decompose-gate/main';
   const cleanup = [];
+  const cleanupWarnings = [];
 
   const record = (name, status, detail) => checks.push({ name, status, detail: String(detail || '').slice(0, 2000) });
   const done = () => {
     for (const wt of cleanup) {
-      try { exec('git', ['worktree', 'remove', '--force', wt], { cwd: repoRoot }); } catch { /* best-effort */ }
+      try { exec('git', ['worktree', 'remove', '--force', wt], { cwd: repoRoot }); } catch (err) {
+        cleanupWarnings.push(`worktree cleanup failed (${wt}): ${err.message}`);
+      }
     }
     for (const ref of [branchRef, mainRef]) {
-      try { exec('git', ['update-ref', '-d', ref], { cwd: repoRoot }); } catch { /* best-effort */ }
+      try { exec('git', ['update-ref', '-d', ref], { cwd: repoRoot }); } catch (err) {
+        cleanupWarnings.push(`worktree cleanup failed (${ref}): ${err.message}`);
+      }
     }
     try { fs.rmSync(wtBase, { recursive: true, force: true }); } catch { /* best-effort */ }
     const failed = checks.filter((c) => c.status === 'fail');
-    return { ok: failed.length === 0, checks, branch };
+    const result = { ok: failed.length === 0, checks, branch };
+    if (cleanupWarnings.length) result.cleanupWarnings = cleanupWarnings;
+    return result;
   };
 
   try {
