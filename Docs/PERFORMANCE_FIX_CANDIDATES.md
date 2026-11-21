@@ -45,3 +45,26 @@ Replace the synchronous loop with `fs.promises.readdir` and `Promise.all` to run
 
 Benefits:
 The fix reduces total I/O wait time by parallelizing reads, avoids event loop blocking during frequent invocations, and preserves output semantics without adding new dependencies or logging/metrics. The change is minimal, safe, and uses only primitives already available in the project.
+
+### AC-3 · Memoize File Lookup to Avoid Sync I/O in Loop
+Strength: Strong
+Files: src/carry-hold.js
+Snippet:
+```
+
+// The queue file holding the piece's record, or null. The drafting/ lanes are checked separately by inDrafting.
+function findRecordFile(pipelineDir, taskId) {
+  for (const state of RECORD_STATES) {
+    const file = path.join(pipelineDir, 'queue', state, `${taskId}.json`);
+    if (fs.existsSync(file)) return file;
+  }
+```
+
+Problem:
+The `findRecordFile` function iterates over `RECORD_STATES` and performs a synchronous `fs.existsSync` call for each state. Since `fs.existsSync` blocks the Node.js event loop, each iteration introduces latency — even for a small number of states — and if called frequently (e.g., 100 times per second), the cumulative blocking becomes significant. The scanner correctly identifies this as a “sync-io-in-loop” issue, which is a real performance bottleneck in high-throughput systems.
+
+Solution:
+Memoize the result per `taskId` using a `Map` to avoid redundant I/O. On first call for a task ID, perform the full loop and cache the result (either the file path or `null`). Subsequent calls for the same `taskId` return the cached value immediately — eliminating all future sync I/O for that ID.
+
+Benefits:
+The fix eliminates repeated blocking I/O for the same task ID, reducing event loop contention and improving throughput. Since the cache is only used to avoid redundant I/O — not to guarantee correctness — it’s safe for this use case. The fix uses only `Map` and `fs.existsSync`, which are already available in the project.
