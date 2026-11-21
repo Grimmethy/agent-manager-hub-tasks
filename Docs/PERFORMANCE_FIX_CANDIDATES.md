@@ -68,3 +68,26 @@ Memoize the result per `taskId` using a `Map` to avoid redundant I/O. On first c
 
 Benefits:
 The fix eliminates repeated blocking I/O for the same task ID, reducing event loop contention and improving throughput. Since the cache is only used to avoid redundant I/O — not to guarantee correctness — it’s safe for this use case. The fix uses only `Map` and `fs.existsSync`, which are already available in the project.
+
+### AC-4 · Asyncify File Reads with Promise.all
+Strength: Strong
+Files: src/carry-hold.js
+Snippet:
+```
+  const dir = path.join(pipelineDir, 'queue', 'coordinating');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { /* no coordinating dir */ }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    let hub;
+    try { hub = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+```
+
+Problem:  
+The current code uses `fs.readFileSync` inside a loop that iterates over every `.json` file in a directory. Each call blocks the Node.js event loop, causing high latency and degraded throughput under load — especially if there are many files. This is not a batched or parallelized operation, and the synchronous nature of the I/O prevents concurrent reads, making the loop a performance bottleneck.
+
+Solution:  
+Replace the synchronous loop with an async/await pattern using `fs.promises.readFile` and `Promise.all` to parallelize all file reads. This eliminates the blocking I/O per iteration, allowing all reads to happen concurrently. The loop runs once, and the reads are batched — no new dependencies or logging changes needed.
+
+Benefits:  
+The fix reduces latency significantly by eliminating per-file blocking, improving throughput and responsiveness under load. The code remains correct and safe, with no correctness or security impact — only performance is improved. The change is minimal and uses only Node.js core primitives (`fs/promises` and `Promise.all`) already available in the project.
